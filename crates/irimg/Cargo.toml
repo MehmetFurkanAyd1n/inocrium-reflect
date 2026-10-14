@@ -1,0 +1,20 @@
+[package]
+name = "irimg"
+description = "The .irimg disk image format: writer, reader, block index, split files, zstd, AES-256-GCM, BLAKE3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+zstd.workspace = true
+aes-gcm.workspace = true
+argon2.workspace = true
+blake3.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

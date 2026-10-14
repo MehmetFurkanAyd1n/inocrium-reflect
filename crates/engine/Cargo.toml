@@ -1,0 +1,27 @@
+[package]
+name = "engine"
+description = "Backup, verify, restore, retention and mount orchestration on top of irimg and blockdev"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+irimg.workspace = true
+blockdev.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+winio.workspace = true
+vss.workspace = true
+iscsi.workspace = true
+mrimgx.workspace = true

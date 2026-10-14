@@ -1,0 +1,16 @@
+[package]
+name = "iscsi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+blockdev.workspace = true
+md-5.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Storage_IscsiDisc", "Win32_System_Ioctl", "Win32_System_Services", "Win32_Security"] }

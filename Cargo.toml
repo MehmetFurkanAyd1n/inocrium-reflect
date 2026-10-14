@@ -1,0 +1,98 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/irimg",
+    "crates/winio",
+    "crates/vss",
+    "crates/blockdev",
+    "crates/iscsi",
+    "crates/mrimgx",
+    "crates/engine",
+    "crates/redeploy",
+    "crates/hyperv",
+    "crates/ipc",
+    "crates/service",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+repository = "https://github.com/MehmetFurkanAyd1n/inocrium-reflect"
+authors = ["inocrium reflect contributors"]
+rust-version = "1.85"
+
+[workspace.dependencies]
+irimg = { path = "crates/irimg" }
+winio = { path = "crates/winio" }
+vss = { path = "crates/vss" }
+blockdev = { path = "crates/blockdev" }
+iscsi = { path = "crates/iscsi" }
+mrimgx = { path = "crates/mrimgx" }
+engine = { path = "crates/engine" }
+redeploy = { path = "crates/redeploy" }
+hyperv = { path = "crates/hyperv" }
+ipc = { path = "crates/ipc" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+zstd = "0.13"
+aes-gcm = "0.10"
+argon2 = "0.5"
+blake3 = "1"
+crc32fast = "1"
+md-5 = "0.10"
+aes = "0.8"
+cbc = "0.1"
+sha2 = "0.10"
+hmac = "0.12"
+pbkdf2 = "0.12"
+lz4_flex = "0.11"
+flate2 = "1"
+rand = "0.8"
+getrandom = "0.2"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+lru = "0.12"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+chrono = { version = "0.4", features = ["serde"] }
+windows-service = "0.8"
+tempfile = "3"
+ctrlc = "3"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_Storage_IscsiDisc",
+    "Win32_Storage_Vhd",
+    "Win32_Storage_Vss",
+    "Win32_System_Com",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Ole",
+    "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_System_WindowsProgramming",
+    "Win32_NetworkManagement_WNet",
+    "Win32_UI_Shell",
+] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# Dependencies (zstd, AES, BLAKE3, Argon2) are far too slow unoptimized for the image tests.
+[profile.dev.package."*"]
+opt-level = 2

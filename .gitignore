@@ -1,0 +1,9 @@
+/target
+**/bin/
+**/obj/
+*.user
+.vs/
+/installer/out/
+*.irimg
+*.i[0-9][0-9]
+*.ckpt

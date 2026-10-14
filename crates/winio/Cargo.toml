@@ -1,0 +1,16 @@
+[package]
+name = "winio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+blockdev.workspace = true
+windows.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "blockdev"
+description = "Block device abstraction: image views, synthetic GPT disks, identity rewriting and copy-on-write overlays"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+irimg.workspace = true
+uuid.workspace = true
+crc32fast.workspace = true
+lru.workspace = true
+parking_lot.workspace = true
+getrandom.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

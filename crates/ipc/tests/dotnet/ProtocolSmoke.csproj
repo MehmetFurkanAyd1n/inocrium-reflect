@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="StreamJsonRpc" Version="2.21.10" />
+    <Compile Include="../../../../gui/Inocrium.App/Models/Protocol.cs" Link="Protocol.cs" />
+    <Compile Include="../../../../gui/Inocrium.App/Services/RpcService.cs" Link="RpcService.cs" />
+  </ItemGroup>
+</Project>

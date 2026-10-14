@@ -1,0 +1,15 @@
+[package]
+name = "vss"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Storage_Vss", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_Security"] }
+uuid.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+winio.workspace = true
+blockdev.workspace = true
