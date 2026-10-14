@@ -48,7 +48,7 @@ pub fn open_permissions(disk: &dyn BlockDevice) -> (Vec<Patch>, Vec<String>) {
 
 /// Start offsets of the partitions on `disk` (GPT, MBR including logical partitions, or a
 /// single volume at offset 0).
-fn volume_offsets(disk: &dyn BlockDevice) -> io::Result<Vec<u64>> {
+pub(crate) fn volume_offsets(disk: &dyn BlockDevice) -> io::Result<Vec<u64>> {
     let ss = u64::from(disk.block_size());
     let mut head = vec![0u8; disk.size().min(1024 * 1024) as usize];
     disk.read_at(0, &mut head)?;

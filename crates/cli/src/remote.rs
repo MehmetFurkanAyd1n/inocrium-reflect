@@ -126,7 +126,7 @@ pub fn run(cli: &Cli, client: &Client, passwords: &mut Passwords, cancel: &engin
             },
         )?),
         Command::Viboot { command } => match command {
-            VibootCommand::Start { img, disk, name, memory, cpus } => Some(request(
+            VibootCommand::Start { img, disk, name, memory, cpus, keep_boot_loader } => Some(request(
                 client,
                 methods::VIBOOT_START,
                 VibootStartParams {
@@ -136,6 +136,7 @@ pub fn run(cli: &Cli, client: &Client, passwords: &mut Passwords, cancel: &engin
                     vm_name: name.clone(),
                     memory_mb: *memory,
                     cpus: *cpus,
+                    boot_windows: Some(!*keep_boot_loader),
                 },
                 passwords,
                 timeout,

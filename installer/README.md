@@ -11,7 +11,7 @@ From the repository root:
 
 ```powershell
 rustup target add x86_64-pc-windows-msvc
-.\installer\build.ps1 -Configuration Release -Platform x64 -Version 0.1.3
+.\installer\build.ps1 -Configuration Release -Platform x64 -Version 0.1.4
 ```
 
 ARM64 uses the same authoring with a platform property. Install the ARM64 MSVC
@@ -19,7 +19,7 @@ compiler/linker and Windows SDK libraries, then:
 
 ```powershell
 rustup target add aarch64-pc-windows-msvc
-.\installer\build.ps1 -Platform ARM64 -Version 0.1.3
+.\installer\build.ps1 -Platform ARM64 -Version 0.1.4
 ```
 
 The script builds the Rust service and CLI in release mode for the requested
@@ -42,11 +42,11 @@ For existing payloads, build WiX directly:
 
 ```powershell
 dotnet build installer/Inocrium.Installer.wixproj -c Release -p:Platform=x64 `
-  -p:ProductVersion=0.1.3 '-p:RustOutDir=C:\payload\rust' `
+  -p:ProductVersion=0.1.4 '-p:RustOutDir=C:\payload\rust' `
   '-p:GuiPublishDir=C:\payload\gui'
 ```
 
-`ProductVersion` defaults to `0.1.3`; `RustOutDir` defaults to `target/release`;
+`ProductVersion` defaults to `0.1.4`; `RustOutDir` defaults to `target/release`;
 `GuiPublishDir` defaults to the staging path above. Include `LICENSE` in a manually
 prepared GUI payload. The GUI project has no explicit `AssemblyName`, so its
 project name yields `Inocrium.App.exe`. The Rust binaries are `inocrium.exe` and

@@ -24,6 +24,7 @@ use winio::RawDisk;
 
 use super::restore::{read_head, retable, Patched};
 use super::AnyImage;
+use crate::esp::WindowsBoot;
 use crate::{Error, Result};
 
 /// IQN prefix of every target this process creates (see [`iscsi::iqn_for`]).
@@ -50,6 +51,12 @@ pub struct MountRequest {
     /// Expose NTFS permissions as imaged. Otherwise every file and folder is readable and
     /// writable by everyone (see [`crate::ntfs`]); the image itself is not changed.
     pub keep_permissions: bool,
+    /// The disk is for a virtual machine. It keeps the image's disk and partition identities,
+    /// which the boot configuration of the Windows inside refers to, and stays offline here.
+    pub vm_disk: bool,
+    /// Make Windows Boot Manager the UEFI fallback boot loader of the disk, as a VM starts
+    /// that loader (see [`crate::esp`]).
+    pub boot_windows: bool,
 }
 
 impl std::fmt::Debug for MountRequest {
@@ -62,6 +69,8 @@ impl std::fmt::Debug for MountRequest {
             .field("partition", &self.partition)
             .field("assign_letters", &self.assign_letters)
             .field("keep_permissions", &self.keep_permissions)
+            .field("vm_disk", &self.vm_disk)
+            .field("boot_windows", &self.boot_windows)
             .finish()
     }
 }
@@ -103,6 +112,9 @@ pub struct MountInfo {
     pub cow_paths: Vec<PathBuf>,
     pub created: DateTime<Utc>,
     pub warnings: Vec<String>,
+    /// Changes made to what the disk shows, such as a replaced boot loader.
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 /// One active mount and everything needed to tear it down.
@@ -224,6 +236,7 @@ impl MountManager {
                 cow_paths: Vec::new(),
                 created: Utc::now(),
                 warnings: Vec::new(),
+                notes: Vec::new(),
             },
             server: None,
             portal: None,
@@ -257,21 +270,23 @@ impl MountManager {
         let mut luns = Vec::new();
         // Partition offset (on the exposed disk) to report, per LUN.
         let mut only: Vec<Option<u64>> = Vec::new();
+        let view = ViewOptions { rewrite_identity: !req.vm_disk, ..ViewOptions::default() };
         for (lun, &d) in image_disks.iter().enumerate() {
             let src = image.disk(d).ok_or_else(|| Error::invalid(format!("the image has no disk {d}")))?;
             let (device, offset): (Arc<dyn BlockDevice>, Option<u64>) = match image {
                 AnyImage::Irimg(r) => match req.partition {
                     Some(p) => {
-                        let view = ImageDiskView::partition(r.clone(), d, p, ViewOptions::default())?;
+                        let view = ImageDiskView::partition(r.clone(), d, p, view.clone())?;
                         let offset = view.partition_offset(p);
                         (Arc::new(view), offset)
                     }
-                    None => (Arc::new(ImageDiskView::disk(r.clone(), d, ViewOptions::default())?), None),
+                    None => (Arc::new(ImageDiskView::disk(r.clone(), d, view.clone())?), None),
                 },
                 AnyImage::Mrimgx(m) => {
                     let dev = m.disk_device(d as usize)?;
                     // A fresh identity, so the mount does not collide with the source disk.
-                    let patches = retable(&read_head(&*dev)?, src.sector_size, src.size, src.size, true, false).writes;
+                    let patches =
+                        retable(&read_head(&*dev)?, src.sector_size, src.size, src.size, !req.vm_disk, false).writes;
                     let offset = match req.partition {
                         Some(p) => Some(
                             m.info().disks[d as usize]
@@ -286,17 +301,26 @@ impl MountManager {
                     (Arc::new(Patched::new(dev, patches)), offset)
                 }
             };
-            let device: Arc<dyn BlockDevice> = if req.keep_permissions {
-                device
-            } else {
-                let (patches, warnings) = crate::ntfs::open_permissions(&*device);
+            let mut patches = Vec::new();
+            if !req.keep_permissions {
+                let (opened, warnings) = crate::ntfs::open_permissions(&*device);
                 mount.info.warnings.extend(warnings);
-                if patches.is_empty() {
-                    device
-                } else {
-                    Arc::new(Patched::new(device, patches))
+                patches.extend(opened);
+            }
+            if req.boot_windows {
+                match crate::esp::windows_boot(&*device) {
+                    Ok(WindowsBoot::Patches(p)) => {
+                        mount.info.notes.push(format!(
+                            "image disk {d}: Windows Boot Manager replaces the default boot loader \\EFI\\BOOT\\BOOTX64.EFI"
+                        ));
+                        patches.extend(p);
+                    }
+                    Ok(WindowsBoot::AlreadyDefault | WindowsBoot::NotFound) => {}
+                    Err(e) => mount.info.warnings.push(format!("image disk {d}: keeping its default boot loader: {e}")),
                 }
-            };
+            }
+            let device: Arc<dyn BlockDevice> =
+                if patches.is_empty() { device } else { Arc::new(Patched::new(device, patches)) };
             let device: Arc<dyn BlockDevice> = if req.writable {
                 std::fs::create_dir_all(&self.cow_dir)?;
                 let path = self.cow_dir.join(format!("{id}-{d}.cow"));
@@ -356,6 +380,13 @@ impl MountManager {
             .ok_or_else(|| Error::invalid("the mounted image disks did not appear"))?;
         mount.info.disks = disks.clone();
 
+        if req.vm_disk {
+            // Hyper-V takes the disk as it is; meanwhile Windows here must not mount its volumes.
+            for &n in &disks {
+                RawDisk::open(n, true)?.set_attributes(Some(true), None)?;
+            }
+            return Ok(());
+        }
         for &n in &disks {
             let raw = RawDisk::open(n, true)?;
             if !req.writable {

@@ -19,7 +19,7 @@ use irimg::Checkpoint;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::app::{App, VmRecord};
+use crate::app::{App, MountFor, VmRecord};
 use crate::disks;
 use crate::images;
 use crate::jobs::{JobCtx, JobOutcome, JobSpec};
@@ -510,6 +510,7 @@ pub fn submit_viboot(app: &Arc<App>, p: VibootStartParams) -> Result<Uuid, RpcEr
     if app.vms.lock().iter().any(|v| v.name.eq_ignore_ascii_case(&name)) {
         return Err(RpcError::new(BUSY, format!("a viBoot VM named {name} already exists")));
     }
+    let boot_windows = p.boot_windows.unwrap_or(true);
     let job_app = app.clone();
     app.jobs.submit(JobSpec {
         kind: JobKind::Viboot,
@@ -527,8 +528,15 @@ pub fn submit_viboot(app: &Arc<App>, p: VibootStartParams) -> Result<Uuid, RpcEr
                 // The VM boots this Windows as its own; its permissions must stay intact.
                 keep_permissions: Some(true),
             };
-            let mount =
-                job_app.mount_raw(&path, password.as_deref(), &params, false).map_err(|e| anyhow!(e.message))?;
+            let mount = job_app
+                .mount_raw(&path, password.as_deref(), &params, MountFor::Vm { boot_windows })
+                .map_err(|e| anyhow!(e.message))?;
+            for note in &mount.notes {
+                ctx.log(note);
+            }
+            for warning in &mount.warnings {
+                ctx.log(&format!("warning: {warning}"));
+            }
             let Some(&disk_number) = mount.disks.first() else {
                 let _ = job_app.unmount_raw(&mount.id);
                 return Err(anyhow!("the mounted image disk did not appear"));

@@ -135,6 +135,10 @@ pub enum VibootCommand {
         memory: u32,
         #[arg(long, default_value_t = 2, value_parser = positive_u32)]
         cpus: u32,
+        /// Boot the image's default UEFI boot loader even if it is not Windows Boot Manager
+        /// (such as GRUB on a dual-boot disk).
+        #[arg(long)]
+        keep_boot_loader: bool,
     },
     List,
     Stop {

@@ -126,11 +126,12 @@ public sealed partial class MainWindow
             targets.SelectionChanged += (_, _) => { targetPartition.Items.Clear(); targetPartition.Items.Add("Whole disk"); if (targets.SelectedItem is Disk target) foreach (var partition in target.Partitions) targetPartition.Items.Add(new ComboBoxItem { Content = $"Partition {partition.Number} · {partition.Label} · {ByteSize.Format(partition.Length)}", Tag = partition.Number }); targetPartition.SelectedIndex = 0; };
             var extend = Check("Extend restored partition to fill target", false); var offset = Input("Target offset in bytes (optional)");
             var vmName = Input("Virtual machine name (optional)"); var memory = Number("Memory (MiB)", 4096, 512, 1048576); var cpus = Number("Virtual CPUs", 2, 1, 256);
+            var bootWindows = Check("Start Windows even if the disk's default boot loader is another one (such as GRUB)", true);
             var content = Stack(diskChoice);
             if (action is "mount" or "restore") content.Children.Add(partitionChoice);
             if (action == "mount") { content.Children.Add(writable); content.Children.Add(keepPermissions); }
             if (action == "restore") foreach (var control in new UIElement[] { targets, targetPartition, offset, extend, Text("RESTORE DESTROYS DATA on the selected target. Check the disk identity and ensure you have a backup.", 16) }) content.Children.Add(control);
-            if (action == "viboot") foreach (var control in new UIElement[] { vmName, memory, cpus }) content.Children.Add(control);
+            if (action == "viboot") foreach (var control in new UIElement[] { vmName, memory, cpus, bootWindows }) content.Children.Add(control);
             if (await Dialog($"Image: {action}", content, "Continue").ShowAsync() != ContentDialogResult.Primary) return;
             var selectedDisk = diskChoice.SelectedItem as ImageDisk ?? throw new InvalidOperationException("Choose an image disk.");
             uint? sourcePartition = (partitionChoice.SelectedItem as ImagePartition)?.Number;
@@ -148,7 +149,7 @@ public sealed partial class MainWindow
                 case "export": var output = await SaveVhdxAsync(); if (output is null) return; await vm.Rpc.CallAsync<Guid>("vhdx.export", new { path = image.Path, password, disk = selectedDisk.Index, output }); break;
                 case "viboot":
                     var existing = vm.VirtualMachines.Select(m => m.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                    try { await vm.Rpc.CallAsync<Guid>("viboot.start", new { path = image.Path, password, disk = selectedDisk.Index, vmName = string.IsNullOrWhiteSpace(vmName.Text) ? null : vmName.Text, memoryMb = checked((uint)memory.Value), cpus = checked((uint)cpus.Value) }); }
+                    try { await vm.Rpc.CallAsync<Guid>("viboot.start", new { path = image.Path, password, disk = selectedDisk.Index, vmName = string.IsNullOrWhiteSpace(vmName.Text) ? null : vmName.Text, memoryMb = checked((uint)memory.Value), cpus = checked((uint)cpus.Value), bootWindows = bootWindows.IsChecked == true }); }
                     catch (RemoteInvocationException error) when (error.ErrorCode == RpcErrorCodes.MethodNotFound)
                     {
                         throw new InvalidOperationException("viBoot requires Hyper-V, which is unavailable on this machine. Enable Hyper-V on a supported Windows edition and restart Windows before trying again.");

@@ -41,7 +41,7 @@ Behavior worth knowing:
 
 - A definition backup that is cancelled or interrupted (service stop, reboot) keeps its checkpoint and persistent VSS snapshot. Running the definition again, its next schedule, or the next service start (for enabled definitions) resumes it. If the sources or the snapshot changed, the partial image is deleted and a new backup starts.
 - Retention runs after a successful backup and is skipped while any image of that definition is mounted or in use.
-- viBoot mounts the image writable without drive letters and attaches the disk to the VM; these mounts appear in `viboot.list`, not `mounts.list`, and are removed with `viboot.stop`.
+- viBoot mounts the image writable without drive letters and attaches the disk to the VM; these mounts appear in `viboot.list`, not `mounts.list`, and are removed with `viboot.stop`. The VM disk keeps the image's disk and partition GUIDs, so Windows' boot configuration still finds its partitions, and stays offline on the host so they do not collide with the source disk. On a dual-boot disk whose default UEFI loader (`\EFI\BOOT\BOOTX64.EFI`) is GRUB or another loader, the VM sees Windows Boot Manager in its place; `--keep-boot-loader` (or clearing the GUI's "Start Windows even if the disk's default boot loader is another one" option) keeps the original loader. Both changes live only in the VM's CoW overlay.
 - Stopping the service cancels jobs, removes viBoot VMs and unmounts everything. Startup removes VMs, iSCSI sessions and CoW files left by a crashed instance. CoW changes never survive a service restart or reboot.
 - The service logs to `%ProgramData%\inocrium\logs\service.log` (`INOCRIUM_LOG` sets the `tracing` filter, default `info`); per-job logs sit next to it. For development, `inocrium-service.exe --console [--data-dir DIR]` runs it in an elevated console until Ctrl+C.
 
@@ -104,7 +104,7 @@ Additional commands and schedule options are implemented in the parser and dispa
 | Command | Options / behavior |
 | --- | --- |
 | `backup` | Repeat `--disk` for multiple disks; `--partitions 1,3` requires exactly one disk. Compression is 0..19 (default 3); split sizes accept bytes or integer K/M/G/T binary suffixes. `--keep-last` and `--keep-days` are mutually exclusive. |
-| `viboot start <img>` | `--disk` (default 0), `--name`, `--memory` in MiB (default 4096), `--cpus` (default 2); requires service orchestration. |
+| `viboot start <img>` | `--disk` (default 0), `--name`, `--memory` in MiB (default 4096), `--cpus` (default 2), `--keep-boot-loader`; requires service orchestration. |
 | `viboot list`, `viboot stop <name>` | Service-owned VM lifecycle. |
 | `def list`, `def run <id>`, `def delete <id>` | Saved definition management and execution. |
 | `def create --name <name> --disk <number> --dest <folder>` | Backup options plus one of `--daily HH:MM`, `--weekly HH:MM --days mon,wed,fri`, or `--monthly HH:MM --day 1..31`; `--run-missed` enables catch-up. |
@@ -189,7 +189,7 @@ rustup target add x86_64-pc-windows-msvc
 .\installer\build.ps1
 ```
 
-The script builds release Rust binaries, publishes a self-contained GUI, and builds `installer\out\x64\inocrium-reflect-0.1.3-x64.msi`. ARM64 is available with `-Platform ARM64` and the `aarch64-pc-windows-msvc` toolchain/libraries. See [installer/README.md](installer/README.md) for prerequisites and version options. Test installation on a clean Windows system before release.
+The script builds release Rust binaries, publishes a self-contained GUI, and builds `installer\out\x64\inocrium-reflect-0.1.4-x64.msi`. ARM64 is available with `-Platform ARM64` and the `aarch64-pc-windows-msvc` toolchain/libraries. See [installer/README.md](installer/README.md) for prerequisites and version options. Test installation on a clean Windows system before release.
 
 ## Testing
 

@@ -37,7 +37,7 @@ pub fn run(cli: &Cli, passwords: &mut Passwords, cancel: &engine::Cancel) -> Res
             let manager = MountManager::new(winio::program_data().join("inocrium/cow"));
             let mounted = manager.mount(&MountRequest { image: img.clone(), password: passwords.current(),
                 writable: *writable, disk: *disk, partition: *partition, assign_letters: true,
-                keep_permissions: *keep_permissions })?;
+                keep_permissions: *keep_permissions, ..Default::default() })?;
             for warning in &mounted.warnings { eprintln!("Warning: {warning}"); }
             let mount = proto::Mount { id: mounted.id.parse()?, image: img.to_string_lossy().into_owned(),
                 disk: disk.unwrap_or(0), partition: *partition, writable: *writable,

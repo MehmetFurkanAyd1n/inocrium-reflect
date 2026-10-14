@@ -156,7 +156,9 @@ pub enum AllMounts {
 dto!(UnmountParams { id: MountId });
 dto!(RestoreParams { path: String, password: Option<String>, disk: u32, partition: Option<u32>, target_disk: u32, target_partition: Option<u32>, target_offset: Option<u64>, extend: bool });
 dto!(ExportVhdxParams { path: String, password: Option<String>, disk: u32, output: String });
-dto!(VibootStartParams { path: String, password: Option<String>, disk: u32, vm_name: Option<String>, memory_mb: u32, cpus: u32 });
+// `boot_windows` (default true): start Windows Boot Manager even when the image's default UEFI
+// boot loader is another one, such as GRUB.
+dto!(VibootStartParams { path: String, password: Option<String>, disk: u32, vm_name: Option<String>, memory_mb: u32, cpus: u32, boot_windows: Option<bool> });
 dto!(VibootStopParams { name: String });
 dto!(RedeployParams { disk: u32, drivers: Option<Vec<String>> });
 dto!(SettingsSetParams { settings: Settings });
@@ -272,7 +274,7 @@ mod tests {
         check!(
             VibootStartParams,
             serde_json::json!({ "path": "image", "password": password, "disk": 0,
-            "vmName": null, "memoryMb": 2048, "cpus": 2 })
+            "vmName": null, "memoryMb": 2048, "cpus": 2, "bootWindows": null })
         );
         check!(CredentialSetParams, serde_json::json!({ "target": "share", "user": "user", "password": password }));
     }

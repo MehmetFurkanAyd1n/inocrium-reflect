@@ -56,6 +56,15 @@ pub fn engine_error(e: engine::Error) -> RpcError {
     }
 }
 
+/// What a mount is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MountFor {
+    /// A user browses its files: drive letters are assigned.
+    User,
+    /// A viBoot VM boots it.
+    Vm { boot_windows: bool },
+}
+
 impl App {
     pub fn new(paths: &Paths) -> Arc<App> {
         let store = Arc::new(Store::load(paths));
@@ -160,7 +169,7 @@ impl App {
 
     /// Mounts an image disk (or one partition of it) through the loopback iSCSI target.
     pub fn mount(&self, params: &MountParams) -> Result<proto::Mount, RpcError> {
-        let info = self.mount_raw(Path::new(&params.path), params.password.as_deref(), params, true)?;
+        let info = self.mount_raw(Path::new(&params.path), params.password.as_deref(), params, MountFor::User)?;
         let mount = self.to_proto(&info);
         self.notify(notifications::MOUNTS_CHANGED);
         Ok(mount)
@@ -171,7 +180,7 @@ impl App {
         path: &Path,
         password: Option<&str>,
         params: &MountParams,
-        assign_letters: bool,
+        purpose: MountFor,
     ) -> Result<MountInfo, RpcError> {
         let password = images::resolve_password(&self.store, path, password)?;
         let disk = params.disk.unwrap_or(0);
@@ -183,12 +192,17 @@ impl App {
                 writable: params.writable,
                 disk: Some(disk),
                 partition: params.partition,
-                assign_letters,
+                assign_letters: purpose == MountFor::User,
                 keep_permissions: params.keep_permissions.unwrap_or(false),
+                vm_disk: purpose != MountFor::User,
+                boot_windows: purpose == MountFor::Vm { boot_windows: true },
             })
             .map_err(engine_error)?;
         for w in &info.warnings {
             tracing::warn!("mount {}: {w}", info.id);
+        }
+        for n in &info.notes {
+            tracing::info!("mount {}: {n}", info.id);
         }
         tracing::info!("mounted {} disk {disk} as {}", path.display(), info.id);
         self.requested.lock().insert(info.id.clone(), (disk, params.partition));

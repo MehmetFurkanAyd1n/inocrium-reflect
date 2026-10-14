@@ -3,6 +3,7 @@
 //! layout IOCTLs) live in [`win`].
 
 mod error;
+pub mod esp;
 pub mod extents;
 pub mod fs;
 pub mod ntfs;

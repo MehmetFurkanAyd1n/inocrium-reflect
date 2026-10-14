@@ -4,7 +4,7 @@ param(
     [string]$Configuration = 'Release',
     [ValidateSet('x64', 'ARM64')]
     [string]$Platform = 'x64',
-    [string]$Version = '0.1.3'
+    [string]$Version = '0.1.4'
 )
 
 Set-StrictMode -Version Latest
