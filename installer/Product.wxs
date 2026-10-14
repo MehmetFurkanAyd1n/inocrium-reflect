@@ -1,0 +1,70 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="inocrium reflect"
+           Manufacturer="inocrium reflect contributors"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="B4FB741A-0B41-4B90-9D0F-92B19BAF8D6C"
+           Scope="perMachine"
+           InstallerVersion="500">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of inocrium reflect is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="inocrium reflect">
+        <Component Id="ServiceComponent" Guid="*">
+          <File Id="ServiceExe" Source="$(var.RustOutDir)\inocrium-service.exe" KeyPath="yes" />
+          <!-- No Arguments: the executable enters service mode by default. -->
+          <ServiceInstall Id="InstallService"
+                          Name="InocriumReflect"
+                          DisplayName="inocrium reflect service"
+                          Description="Runs backups, schedules and image mounts for inocrium reflect."
+                          Start="auto" Account="LocalSystem" Type="ownProcess"
+                          ErrorControl="normal" Vital="yes" />
+          <ServiceControl Id="ControlService" Name="InocriumReflect"
+                          Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+          <util:ServiceConfig ServiceName="InocriumReflect"
+                              FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart"
+                              RestartServiceDelayInSeconds="60" ResetPeriodInDays="1" />
+        </Component>
+        <Component Id="CliComponent" Guid="*">
+          <File Id="CliExe" Source="$(var.RustOutDir)\inocrium.exe" KeyPath="yes" />
+          <Environment Id="CliPath" Name="PATH" Value="[INSTALLFOLDER]"
+                       Action="set" Part="last" System="yes" Permanent="no" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="inocrium reflect">
+        <Component Id="StartMenuShortcut" Guid="*">
+          <!-- No .ico is present in the repository; use the executable's default icon. -->
+          <Shortcut Id="GuiShortcut" Name="inocrium reflect"
+                    Target="[INSTALLFOLDER]Inocrium.App.exe" WorkingDirectory="INSTALLFOLDER" />
+          <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+          <RegistryValue Root="HKCU" Key="Software\inocrium reflect" Name="Installed"
+                         Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Intentionally do not author ProgramData\inocrium or remove its contents:
+         user definitions, schedules and configuration must survive uninstall/upgrades. -->
+    <Feature Id="MainFeature" Title="inocrium reflect" Level="1">
+      <ComponentRef Id="ServiceComponent" />
+      <ComponentRef Id="CliComponent" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentGroupRef Id="GuiPayload" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="GuiPayload" Directory="INSTALLFOLDER">
+      <Files Include="$(var.GuiPublishDir)\**" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>

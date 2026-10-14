@@ -5,3 +5,19 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+clap.workspace = true
+ipc.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+engine.workspace = true
+irimg.workspace = true
+mrimgx.workspace = true
+winio.workspace = true
+redeploy.workspace = true
+ctrlc.workspace = true
+windows.workspace = true

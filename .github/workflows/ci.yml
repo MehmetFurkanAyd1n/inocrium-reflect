@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test workspace
+        # Tests requiring administrator privileges are #[ignore].
+        run: cargo test --workspace
+
+  gui:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build WinUI GUI
+        # VS MSBuild supplies Microsoft.Build.Packaging.Pri.Tasks.dll and XAML
+        # build tasks that can be missing when using only the bare .NET SDK.
+        run: msbuild gui/Inocrium.sln /restore /m /p:Configuration=Release /p:Platform=x64
+
+  installer:
+    needs: [rust, gui]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build x64 MSI
+        shell: pwsh
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          $version = '0.1.0'
+          if ($env:RELEASE_REF.StartsWith('refs/tags/v')) {
+            $version = $env:RELEASE_REF.Substring('refs/tags/v'.Length)
+          }
+          ./installer/build.ps1 -Configuration Release -Platform x64 -Version $version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inocrium-reflect-msi-x64
+          path: installer/out/x64/*.msi
+          if-no-files-found: error

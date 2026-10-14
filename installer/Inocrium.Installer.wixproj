@@ -1,0 +1,24 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+    <InstallerPlatform Condition="'$(Platform)' == 'x64'">x64</InstallerPlatform>
+    <InstallerPlatform Condition="'$(Platform)' == 'ARM64'">arm64</InstallerPlatform>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.0</ProductVersion>
+    <OutputName>inocrium-reflect-$(ProductVersion)-$(Platform)</OutputName>
+    <OutputPath>$(MSBuildThisFileDirectory)out\$(Platform)\</OutputPath>
+    <RustOutDir Condition="'$(RustOutDir)' == ''">$(MSBuildThisFileDirectory)..\target\release</RustOutDir>
+    <GuiPublishDir Condition="'$(GuiPublishDir)' == ''">$(MSBuildThisFileDirectory)out\staging\$(Platform)\gui</GuiPublishDir>
+    <DefineConstants>$(DefineConstants);ProductVersion=$(ProductVersion);RustOutDir=$(RustOutDir);GuiPublishDir=$(GuiPublishDir)</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
+  </ItemGroup>
+  <Target Name="ValidatePayload" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(Platform)' != 'x64' and '$(Platform)' != 'ARM64'" Text="Platform must be x64 or ARM64." />
+    <Error Condition="!Exists('$(RustOutDir)\inocrium-service.exe')" Text="Missing inocrium-service.exe in RustOutDir: $(RustOutDir)." />
+    <Error Condition="!Exists('$(RustOutDir)\inocrium.exe')" Text="Missing inocrium.exe in RustOutDir: $(RustOutDir)." />
+    <Error Condition="!Exists('$(GuiPublishDir)\Inocrium.App.exe')" Text="Missing Inocrium.App.exe in GuiPublishDir: $(GuiPublishDir)." />
+  </Target>
+</Project>
