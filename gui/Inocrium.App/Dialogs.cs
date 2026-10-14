@@ -120,6 +120,7 @@ public sealed partial class MainWindow
             void UpdatePartitions() { partitionChoice.Items.Clear(); partitionChoice.Items.Add("Whole disk"); if (diskChoice.SelectedItem is ImageDisk disk) foreach (var partition in disk.Partitions.Where(p => p.Captured)) partitionChoice.Items.Add(partition); partitionChoice.SelectedIndex = 0; }
             diskChoice.SelectionChanged += (_, _) => UpdatePartitions(); UpdatePartitions();
             var writable = Check("Writable mount (changes stored in an overlay)", false);
+            var keepPermissions = Check("Keep the image's file permissions (otherwise everyone gets full access to every file)", false);
             var targets = new ComboBox { Header = "TARGET disk — existing data will be overwritten", ItemsSource = vm.Disks, MinWidth = 350 };
             var targetPartition = new ComboBox { Header = "Target partition (whole disk if unset)", MinWidth = 350 };
             targets.SelectionChanged += (_, _) => { targetPartition.Items.Clear(); targetPartition.Items.Add("Whole disk"); if (targets.SelectedItem is Disk target) foreach (var partition in target.Partitions) targetPartition.Items.Add(new ComboBoxItem { Content = $"Partition {partition.Number} · {partition.Label} · {ByteSize.Format(partition.Length)}", Tag = partition.Number }); targetPartition.SelectedIndex = 0; };
@@ -127,7 +128,7 @@ public sealed partial class MainWindow
             var vmName = Input("Virtual machine name (optional)"); var memory = Number("Memory (MiB)", 4096, 512, 1048576); var cpus = Number("Virtual CPUs", 2, 1, 256);
             var content = Stack(diskChoice);
             if (action is "mount" or "restore") content.Children.Add(partitionChoice);
-            if (action == "mount") content.Children.Add(writable);
+            if (action == "mount") { content.Children.Add(writable); content.Children.Add(keepPermissions); }
             if (action == "restore") foreach (var control in new UIElement[] { targets, targetPartition, offset, extend, Text("RESTORE DESTROYS DATA on the selected target. Check the disk identity and ensure you have a backup.", 16) }) content.Children.Add(control);
             if (action == "viboot") foreach (var control in new UIElement[] { vmName, memory, cpus }) content.Children.Add(control);
             if (await Dialog($"Image: {action}", content, "Continue").ShowAsync() != ContentDialogResult.Primary) return;
@@ -135,7 +136,7 @@ public sealed partial class MainWindow
             uint? sourcePartition = (partitionChoice.SelectedItem as ImagePartition)?.Number;
             switch (action)
             {
-                case "mount": await vm.Rpc.CallAsync<Mount>("mounts.mount", new { path = image.Path, password, disk = selectedDisk.Index, partition = sourcePartition, writable = writable.IsChecked == true }); break;
+                case "mount": await vm.Rpc.CallAsync<Mount>("mounts.mount", new { path = image.Path, password, disk = selectedDisk.Index, partition = sourcePartition, writable = writable.IsChecked == true, keepPermissions = keepPermissions.IsChecked == true }); break;
                 case "restore":
                     var target = targets.SelectedItem as Disk ?? throw new InvalidOperationException("Choose a target disk.");
                     uint? targetNumber = (targetPartition.SelectedItem as ComboBoxItem)?.Tag is uint number ? number : null;
@@ -146,11 +147,13 @@ public sealed partial class MainWindow
                     await vm.Rpc.CallAsync<Guid>("restore.start", new { path = image.Path, password, disk = selectedDisk.Index, partition = sourcePartition, targetDisk = target.Number, targetPartition = targetNumber, targetOffset = string.IsNullOrWhiteSpace(offset.Text) ? (ulong?)null : ulong.Parse(offset.Text), extend = extend.IsChecked == true }); break;
                 case "export": var output = await SaveVhdxAsync(); if (output is null) return; await vm.Rpc.CallAsync<Guid>("vhdx.export", new { path = image.Path, password, disk = selectedDisk.Index, output }); break;
                 case "viboot":
+                    var existing = vm.VirtualMachines.Select(m => m.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
                     try { await vm.Rpc.CallAsync<Guid>("viboot.start", new { path = image.Path, password, disk = selectedDisk.Index, vmName = string.IsNullOrWhiteSpace(vmName.Text) ? null : vmName.Text, memoryMb = checked((uint)memory.Value), cpus = checked((uint)cpus.Value) }); }
                     catch (RemoteInvocationException error) when (error.ErrorCode == RpcErrorCodes.MethodNotFound)
                     {
                         throw new InvalidOperationException("viBoot requires Hyper-V, which is unavailable on this machine. Enable Hyper-V on a supported Windows edition and restart Windows before trying again.");
                     }
+                    _ = OpenConsoleWhenRunningAsync(image.Path, existing);
                     break;
             }
             await RefreshAsync();

@@ -195,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "blockdev"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "crc32fast",
  "getrandom 0.2.17",
@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "engine"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "blockdev",
  "chrono",
@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "hyperv"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "inocrium"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -621,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "inocrium-service"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -656,7 +656,7 @@ dependencies = [
 
 [[package]]
 name = "ipc"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "irimg"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -693,7 +693,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "iscsi"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "blockdev",
  "md-5",
@@ -800,7 +800,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mrimgx"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "aes",
  "blockdev",
@@ -1015,7 +1015,7 @@ dependencies = [
 
 [[package]]
 name = "redeploy"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "tempfile",
  "thiserror",
@@ -1360,7 +1360,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vss"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "blockdev",
  "serde",
@@ -1583,7 +1583,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "winio"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "blockdev",
  "parking_lot",

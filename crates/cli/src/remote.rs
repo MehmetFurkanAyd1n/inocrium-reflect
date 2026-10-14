@@ -64,7 +64,7 @@ pub fn run(cli: &Cli, client: &Client, passwords: &mut Passwords, cancel: &engin
             passwords,
             timeout,
         )?),
-        Command::Mount { img, writable, disk, partition } => {
+        Command::Mount { img, writable, keep_permissions, disk, partition } => {
             let mount: Mount = request(
                 client,
                 methods::MOUNTS_MOUNT,
@@ -74,6 +74,7 @@ pub fn run(cli: &Cli, client: &Client, passwords: &mut Passwords, cancel: &engin
                     disk: *disk,
                     partition: *partition,
                     writable: *writable,
+                    keep_permissions: Some(*keep_permissions),
                 },
                 passwords,
                 Duration::from_secs(180),

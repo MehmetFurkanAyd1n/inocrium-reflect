@@ -8,8 +8,10 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use blockdev::{BlockDevice, CowOverlay, ImageDiskView, ViewOptions};
 use chrono::{DateTime, Utc};
@@ -29,6 +31,8 @@ pub const IQN_PREFIX: &str = "iqn.2026-01.org.inocrium:image-";
 
 const DISK_TIMEOUT: Duration = Duration::from_secs(30);
 const VOLUME_TIMEOUT: Duration = Duration::from_secs(20);
+/// Pause between attempts to detach a disk that another program holds open.
+const RELEASE_RETRY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -43,6 +47,9 @@ pub struct MountRequest {
     pub partition: Option<u32>,
     /// Give volumes without a drive letter a free one.
     pub assign_letters: bool,
+    /// Expose NTFS permissions as imaged. Otherwise every file and folder is readable and
+    /// writable by everyone (see [`crate::ntfs`]); the image itself is not changed.
+    pub keep_permissions: bool,
 }
 
 impl std::fmt::Debug for MountRequest {
@@ -54,6 +61,7 @@ impl std::fmt::Debug for MountRequest {
             .field("disk", &self.disk)
             .field("partition", &self.partition)
             .field("assign_letters", &self.assign_letters)
+            .field("keep_permissions", &self.keep_permissions)
             .finish()
     }
 }
@@ -108,8 +116,11 @@ struct Mount {
 }
 
 impl Mount {
-    /// Best-effort teardown; returns the problems encountered.
-    fn teardown(&mut self) -> Vec<String> {
+    /// Best-effort teardown; returns the problems encountered and whether a program still
+    /// holds a disk of the session open. Then the target keeps running and teardown is to be
+    /// repeated: stopping it would leave Windows reconnecting a session with no target. With
+    /// `force` the target is stopped regardless.
+    fn teardown(&mut self, force: bool) -> (Vec<String>, bool) {
         let mut problems = Vec::new();
         for m in self.assigned.drain(..) {
             if let Err(e) = winio::remove_mount_point(&m) {
@@ -125,8 +136,14 @@ impl Mount {
             }
         }
         if let Some(s) = self.session.take() {
-            if let Err(e) = initiator::logout(&s) {
-                problems.push(format!("iSCSI logout: {e}"));
+            match initiator::logout(&s) {
+                Ok(()) => {}
+                Err(iscsi::Error::Busy(e)) if !force => {
+                    self.session = Some(s);
+                    problems.push(format!("iSCSI logout: {e}"));
+                    return (problems, true);
+                }
+                Err(e) => problems.push(format!("iSCSI logout: {e}")),
             }
         }
         if let Some(addr) = self.portal.take() {
@@ -144,19 +161,28 @@ impl Mount {
                 }
             }
         }
-        problems
+        (problems, false)
     }
 }
 
 pub struct MountManager {
     mounts: Mutex<HashMap<String, Mount>>,
+    /// Threads finishing unmounts whose disk another program held open, and their images.
+    releasing: Mutex<Vec<(JoinHandle<()>, PathBuf)>>,
+    /// Tells those threads to give up waiting.
+    stop_releasing: Arc<AtomicBool>,
     cow_dir: PathBuf,
 }
 
 impl MountManager {
     /// `cow_dir` holds the copy-on-write files of writable mounts.
     pub fn new(cow_dir: impl Into<PathBuf>) -> Self {
-        Self { mounts: Mutex::new(HashMap::new()), cow_dir: cow_dir.into() }
+        Self {
+            mounts: Mutex::new(HashMap::new()),
+            releasing: Mutex::new(Vec::new()),
+            stop_releasing: Arc::new(AtomicBool::new(false)),
+            cow_dir: cow_dir.into(),
+        }
     }
 
     /// Removes what a previous run left behind: sessions and portals of our targets and
@@ -211,7 +237,7 @@ impl MountManager {
                 Ok(info)
             }
             Err(e) => {
-                mount.teardown();
+                mount.teardown(true);
                 Err(e)
             }
         }
@@ -258,6 +284,17 @@ impl MountManager {
                         None => None,
                     };
                     (Arc::new(Patched::new(dev, patches)), offset)
+                }
+            };
+            let device: Arc<dyn BlockDevice> = if req.keep_permissions {
+                device
+            } else {
+                let (patches, warnings) = crate::ntfs::open_permissions(&*device);
+                mount.info.warnings.extend(warnings);
+                if patches.is_empty() {
+                    device
+                } else {
+                    Arc::new(Patched::new(device, patches))
                 }
             };
             let device: Arc<dyn BlockDevice> = if req.writable {
@@ -369,15 +406,69 @@ impl MountManager {
     }
 
     /// Unmounts `id`, discarding writes. Returns problems that did not stop the unmount.
+    ///
+    /// The drive letters and volumes are gone on return. If a program (such as Task Manager's
+    /// Performance page) still holds the disk open, the disk itself is detached in the
+    /// background once it is released.
     pub fn unmount(&self, id: &str) -> Result<Vec<String>> {
         let mut mount =
             self.mounts.lock().remove(id).ok_or_else(|| Error::invalid(format!("no mount with id {id}")))?;
-        Ok(mount.teardown())
+        let (mut problems, busy) = mount.teardown(false);
+        if busy {
+            problems.push(format!(
+                "the image disk stays attached, offline, until the program holding it open lets go; it is \
+                 detached automatically then (mount {id})"
+            ));
+            self.release_later(mount);
+        }
+        Ok(problems)
     }
 
+    /// Unmounts everything, including disks still waiting to be released, which are then
+    /// detached even though a program holds them open.
     pub fn unmount_all(&self) -> Vec<String> {
         let all: Vec<Mount> = self.mounts.lock().drain().map(|(_, m)| m).collect();
-        all.into_iter().flat_map(|mut m| m.teardown()).collect()
+        let problems = all.into_iter().flat_map(|mut m| m.teardown(true).0).collect();
+        self.stop_releasing.store(true, Ordering::SeqCst);
+        for (handle, _) in std::mem::take(&mut *self.releasing.lock()) {
+            let _ = handle.join();
+        }
+        self.stop_releasing.store(false, Ordering::SeqCst);
+        problems
+    }
+
+    /// Images still read by unmounted disks that wait to be released.
+    pub fn releasing_images(&self) -> Vec<PathBuf> {
+        let mut releasing = self.releasing.lock();
+        releasing.retain(|(h, _)| !h.is_finished());
+        releasing.iter().map(|(_, image)| image.clone()).collect()
+    }
+
+    fn release_later(&self, mut mount: Mount) {
+        let image = mount.info.image.clone();
+        let stop = self.stop_releasing.clone();
+        let handle = std::thread::spawn(move || {
+            let id = mount.info.id.clone();
+            loop {
+                let wait = Instant::now();
+                while wait.elapsed() < RELEASE_RETRY && !stop.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                let force = stop.load(Ordering::SeqCst);
+                let (problems, busy) = mount.teardown(force);
+                if !busy {
+                    if force && !problems.is_empty() {
+                        tracing::warn!("mount {id} detached while still in use: {}", problems.join("; "));
+                    } else {
+                        tracing::info!("mount {id}: the image disk was released and detached");
+                    }
+                    return;
+                }
+            }
+        });
+        let mut releasing = self.releasing.lock();
+        releasing.retain(|(h, _)| !h.is_finished());
+        releasing.push((handle, image));
     }
 
     pub fn cow_dir(&self) -> &Path {

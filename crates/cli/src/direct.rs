@@ -31,12 +31,13 @@ pub fn run(cli: &Cli, passwords: &mut Passwords, cancel: &engine::Cancel) -> Res
             progress::finish(cli.json);
             output::value(&serde_json::json!({"verified":true, "image":img}), cli.json)?;
         }
-        Command::Mount { img, writable, disk, partition } => {
+        Command::Mount { img, writable, keep_permissions, disk, partition } => {
             let _ = open_image(img, passwords)?;
             cancel.check()?;
             let manager = MountManager::new(winio::program_data().join("inocrium/cow"));
             let mounted = manager.mount(&MountRequest { image: img.clone(), password: passwords.current(),
-                writable: *writable, disk: *disk, partition: *partition, assign_letters: true })?;
+                writable: *writable, disk: *disk, partition: *partition, assign_letters: true,
+                keep_permissions: *keep_permissions })?;
             for warning in &mounted.warnings { eprintln!("Warning: {warning}"); }
             let mount = proto::Mount { id: mounted.id.parse()?, image: img.to_string_lossy().into_owned(),
                 disk: disk.unwrap_or(0), partition: *partition, writable: *writable,

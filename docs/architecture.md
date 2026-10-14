@@ -50,6 +50,8 @@ Retention selects native images by destination folder and filename prefix, using
 
 `engine::win::MountManager` runs one iSCSI target per mount, binding to `127.0.0.1:0`, with random CHAP credentials and one LUN per selected image disk. It starts/uses the Microsoft iSCSI Initiator, adds a portal, logs in, discovers disks, and can assign drive letters. Teardown removes assigned letters, attempts volume dismount, logs out, removes the portal, stops the target and discards CoW files. Cleanup errors are reported; stale startup cleanup is best effort.
 
+Unless a mount keeps permissions, `engine::ntfs` finds each NTFS volume on the exposed disk (GPT, MBR with logical partitions, or a bare volume), reads `$Secure:$SDS` through the MFT (following an attribute list) and replaces every self-relative security descriptor, primary and mirror copy, with one of the same length that is owned by Administrators and grants Everyone full control with object and container inheritance. The patches are served by a read-only patch layer under any CoW overlay; descriptor headers, hashes and the `$SII`/`$SDH` indexes are unchanged. Volumes that cannot be parsed are left as imaged with a mount warning. viBoot keeps permissions, because the VM runs that Windows.
+
 For `.irimg`, selecting one partition changes the exposed view. For `.mrimgx`, the current mount path still exposes the whole disk and limits the reported volumes to the selected partition.
 
 The service design places overlays in `%ProgramData%\inocrium\cow`. `MountManager` itself accepts a caller-selected directory. The direct CLI uses that same path but owns its manager in the mounting process: it waits until Ctrl+C, then unmounts. A separate direct `unmount` cannot reach that manager.

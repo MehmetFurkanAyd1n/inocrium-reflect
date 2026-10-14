@@ -17,9 +17,20 @@ const GPT_STORAGE_SPACES: Uuid = uuid!("e75caf8f-f680-4cee-afa3-b001e56efc2d");
 const GPT_LINUX_DATA: Uuid = uuid!("0fc63daf-8483-4772-8e79-3d69d8477de4");
 const GPT_LINUX_SWAP: Uuid = uuid!("0657fd6d-a4ab-43c4-84e5-0933c84b4f4f");
 
-/// Every physical disk the service can see, in the wire format.
-pub fn list() -> Result<Vec<proto::Disk>, RpcError> {
-    Ok(winio::list_disks().map_err(internal)?.iter().map(to_proto).collect())
+/// Every physical disk the service can see, in the wire format, except the disks of mounted
+/// images (`mounted` lists the service's own; direct CLI mounts are recognized by their model).
+pub fn list(mounted: &[u32]) -> Result<Vec<proto::Disk>, RpcError> {
+    Ok(winio::list_disks()
+        .map_err(internal)?
+        .iter()
+        .filter(|d| !mounted.contains(&d.number) && !is_image_disk(d))
+        .map(to_proto)
+        .collect())
+}
+
+/// A loopback iSCSI disk exposing an image (see `engine::win::mount`).
+fn is_image_disk(disk: &DiskInfo) -> bool {
+    disk.bus_type.eq_ignore_ascii_case("iSCSI") && disk.model.trim() == "Image Disk"
 }
 
 /// The identity clients store in a definition: the GPT disk GUID or the MBR signature.

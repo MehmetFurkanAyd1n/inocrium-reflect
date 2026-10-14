@@ -206,6 +206,52 @@ Describe 'inocrium VHDX end-to-end scenarios' -Tag 'Admin', 'Slow' {
         finally { Stop-TestImageMount -Mount $mount }
     }
 
+    It 'a service unmount detaches a disk only once another program releases it' {
+        $source = New-MountFixture
+        $attempt = Start-TestImageMount -Workspace $script:Workspace -Exe $script:Exe -Image $source.Image -PayloadName $source.Fixture.Payload
+        if ($null -eq $attempt.Mount) { Set-ItResult -Skipped -Because $attempt.Reason; return }
+        $mount = $attempt.Mount
+        if ($mount.Mode -ne 'Service') { Stop-TestImageMount -Mount $mount; Set-ItResult -Skipped -Because 'Needs the service, which keeps running after the unmount.'; return }
+        if (-not ('InocriumTestDiskHandle' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class InocriumTestDiskHandle {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    // Opens a disk the way monitoring tools do, which makes Plug and Play removal fail.
+    public static SafeFileHandle Open(int disk) {
+        var handle = CreateFileW(@"\\.\PhysicalDrive" + disk, 0x80000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+        if (handle.IsInvalid) throw new System.ComponentModel.Win32Exception();
+        return handle;
+    }
+}
+'@
+        }
+        $id = ([guid]$mount.Id).ToString('N')
+        $iqn = 'iqn.2026-01.org.inocrium:image-' + $id
+        # The image disk reports the serial "<mount id>-<LUN>"; Win32_DiskDrive is not cached
+        # like the Storage module's view, whose disk numbers can be stale after earlier mounts.
+        $drives = @(Get-CimInstance Win32_DiskDrive | Where-Object { "$($_.SerialNumber)".Trim() -eq "$id-0" })
+        $drives.Count | Should -Be 1
+        $disk = [int]$drives[0].Index
+        $disk | Should -BeGreaterThan 3 -Because 'disks 0-3 are never touched by these tests'
+        $handle = [InocriumTestDiskHandle]::Open($disk)
+        try {
+            Stop-TestImageMount -Mount $mount
+            $held = @(Get-IscsiSession -ErrorAction SilentlyContinue | Where-Object { $_.TargetNodeAddress -eq $iqn })
+            $held.Count | Should -Be 1 -Because 'the session stays while the disk is held'
+            $held[0].IsConnected | Should -BeTrue -Because 'the target must keep serving a held disk'
+        }
+        finally { $handle.Dispose() }
+        $deadline = [DateTime]::UtcNow.AddSeconds(90)
+        while (@(Get-IscsiSession -ErrorAction SilentlyContinue | Where-Object { $_.TargetNodeAddress -eq $iqn }).Count -gt 0) {
+            if ([DateTime]::UtcNow -ge $deadline) { throw "The session of $iqn remained after the disk was released." }
+            Start-Sleep -Seconds 1
+        }
+    }
+
     It 'a writable mount discards changes when remounted read-only' {
         $source = New-MountFixture
         $attempt = Start-TestImageMount -Workspace $script:Workspace -Exe $script:Exe -Image $source.Image -PayloadName $source.Fixture.Payload -Writable
@@ -228,6 +274,52 @@ Describe 'inocrium VHDX end-to-end scenarios' -Tag 'Admin', 'Slow' {
             $root = Join-Path ($mount.Letter + ':\') $source.Fixture.Payload
             (Test-Path -LiteralPath (Join-Path $root $probeName)) | Should -BeFalse
             Compare-FileHashes -Expected $source.Fixture.Expected[[int]$part.Number] -Actual (Get-FileHashes -Root $root) | Should -BeTrue
+        }
+        finally { Stop-TestImageMount -Mount $mount }
+    }
+
+    It 'a mount opens NTFS permissions unless asked to keep them' {
+        $fixture = New-ScenarioFixture -SizeBytes 256MB -FileSizes @(4096)
+        $root = Join-Path ($fixture.Partitions[0].Letter + ':') $fixture.Payload
+        $locked = Join-Path $root 'locked'
+        $null = New-Item -ItemType Directory -Path $locked
+        [IO.File]::WriteAllText((Join-Path $locked 'secret.txt'), 'only SYSTEM may read this')
+        [IO.File]::WriteAllText((Join-Path $root 'denied.txt'), 'everyone is denied')
+        # SYSTEM-only folder and file, and an explicit deny for Everyone (which includes administrators).
+        foreach ($acl in @(@((Join-Path $locked 'secret.txt'), '/inheritance:r', '/grant:r', '*S-1-5-18:F'),
+                @($locked, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F'),
+                @((Join-Path $root 'denied.txt'), '/deny', '*S-1-1-0:(R)'))) {
+            $output = & icacls.exe @acl 2>&1
+            $LASTEXITCODE | Should -Be 0 -Because "icacls $($acl -join ' '): $output"
+        }
+        { [IO.File]::ReadAllText((Join-Path $locked 'secret.txt')) } | Should -Throw -Because 'the source ACLs must deny this process'
+        { [IO.File]::ReadAllText((Join-Path $root 'denied.txt')) } | Should -Throw
+        $image = New-ScenarioBackup -Fixture $fixture -Options @('--compress', '3')
+        Remove-TestVhd -Vhd $fixture.Vhd
+
+        $attempt = Start-TestImageMount -Workspace $script:Workspace -Exe $script:Exe -Image $image -PayloadName $fixture.Payload
+        if ($null -eq $attempt.Mount) { Set-ItResult -Skipped -Because $attempt.Reason; return }
+        $mount = $attempt.Mount
+        try {
+            $mounted = Join-Path ($mount.Letter + ':') $fixture.Payload
+            [IO.File]::ReadAllText((Join-Path $mounted 'locked\secret.txt')) | Should -Be 'only SYSTEM may read this'
+            [IO.File]::ReadAllText((Join-Path $mounted 'denied.txt')) | Should -Be 'everyone is denied'
+            @(Get-ChildItem -LiteralPath (Join-Path $mounted 'locked') -Force).Count | Should -Be 1
+            $everyone = (New-Object Security.Principal.SecurityIdentifier('S-1-1-0')).Translate([Security.Principal.NTAccount]).Value
+            $rules = @((Get-Acl -LiteralPath (Join-Path $mounted 'locked\secret.txt')).Access)
+            @($rules | Where-Object { $_.IdentityReference.Value -eq $everyone -and $_.AccessControlType -eq 'Allow' -and
+                ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl }).Count | Should -Be 1
+            @($rules | Where-Object { $_.AccessControlType -eq 'Deny' }).Count | Should -Be 0
+        }
+        finally { Stop-TestImageMount -Mount $mount }
+
+        $attempt = Start-TestImageMount -Workspace $script:Workspace -Exe $script:Exe -Image $image -PayloadName $fixture.Payload -KeepPermissions
+        if ($null -eq $attempt.Mount) { throw ('Mount keeping permissions failed: ' + $attempt.Reason) }
+        $mount = $attempt.Mount
+        try {
+            $mounted = Join-Path ($mount.Letter + ':') $fixture.Payload
+            { [IO.File]::ReadAllText((Join-Path $mounted 'locked\secret.txt')) } | Should -Throw
+            { [IO.File]::ReadAllText((Join-Path $mounted 'denied.txt')) } | Should -Throw
         }
         finally { Stop-TestImageMount -Mount $mount }
     }

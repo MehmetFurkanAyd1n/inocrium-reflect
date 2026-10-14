@@ -184,6 +184,7 @@ impl App {
                 disk: Some(disk),
                 partition: params.partition,
                 assign_letters,
+                keep_permissions: params.keep_permissions.unwrap_or(false),
             })
             .map_err(engine_error)?;
         for w in &info.warnings {
@@ -256,8 +257,11 @@ impl App {
         Ok(())
     }
 
-    /// Image paths with an active mount (including viBoot mounts).
+    /// Image paths with an active mount (including viBoot mounts and unmounted disks that a
+    /// program still holds open).
     pub fn mounted_images(&self) -> Vec<PathBuf> {
-        self.mounts.list().into_iter().map(|m| m.image).collect()
+        let mut images: Vec<PathBuf> = self.mounts.list().into_iter().map(|m| m.image).collect();
+        images.extend(self.mounts.releasing_images());
+        images
     }
 }

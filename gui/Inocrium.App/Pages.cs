@@ -12,24 +12,44 @@ public sealed partial class MainWindow
     {
         foreach (var disk in vm.Disks)
         {
-            var bar = new Grid { Height = 64, HorizontalAlignment = HorizontalAlignment.Stretch };
+            var bar = new Grid { Height = 56, HorizontalAlignment = HorizontalAlignment.Stretch, ColumnSpacing = 2 };
+            var details = new StackPanel { Spacing = 2 };
             var intervals = disk.Partitions.OrderBy(p => p.Offset).ToList(); ulong cursor = 0;
             void AddSegment(ulong length, Partition? partition)
             {
-                if (length == 0) return;
+                // Alignment gaps are not worth a segment; small partitions get a readable minimum width.
+                if (length == 0 || partition is null && length < Math.Max(64UL << 20, disk.Size / 200)) return;
                 int column = bar.ColumnDefinitions.Count;
-                bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(length / (double)Math.Max(1UL, disk.Size), GridUnitType.Star) });
-                var color = partition?.FileSystem?.ToUpperInvariant() switch { "NTFS" => Microsoft.UI.Colors.SteelBlue, "FAT32" => Microsoft.UI.Colors.SeaGreen, "EXFAT" => Microsoft.UI.Colors.DarkGoldenrod, "REFS" => Microsoft.UI.Colors.MediumPurple, _ => Microsoft.UI.Colors.DimGray };
-                string label = partition is null ? $"Unallocated · {ByteSize.Format(length)}" : $"{partition.Label} {partition.Letter} · {partition.FileSystem ?? partition.TypeName} · {ByteSize.Format(length)}";
-                var segment = new Border { Background = new SolidColorBrush(color), BorderBrush = new SolidColorBrush(Microsoft.UI.Colors.White), BorderThickness = new Thickness(1), Padding = new Thickness(5), Child = new TextBlock { Text = label, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = new SolidColorBrush(Microsoft.UI.Colors.White), VerticalAlignment = VerticalAlignment.Center } };
+                bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(length / (double)Math.Max(1UL, disk.Size), 0.07), GridUnitType.Star) });
+                var color = PartitionColor(partition);
+                string name = partition is null ? "Unallocated" : PartitionName(partition);
+                string label = partition is null ? $"Unallocated · {ByteSize.Format(length)}" : $"{name} · {partition.FileSystem ?? partition.TypeName} · {ByteSize.Format(length)}";
+                var segment = new Border { Background = new SolidColorBrush(color), CornerRadius = new CornerRadius(4), Padding = new Thickness(6, 4, 6, 4), Child = new TextBlock { Text = partition is null ? "Unallocated" : name, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = new SolidColorBrush(Microsoft.UI.Colors.White), VerticalAlignment = VerticalAlignment.Center } };
                 ToolTipService.SetToolTip(segment, label); Grid.SetColumn(segment, column); bar.Children.Add(segment);
+                var swatch = new Border { Width = 12, Height = 12, CornerRadius = new CornerRadius(2), Background = new SolidColorBrush(color), VerticalAlignment = VerticalAlignment.Center };
+                string used = partition?.UsedBytes is ulong u ? $" · {ByteSize.Format(u)} used" : "";
+                details.Children.Add(Row(swatch, Text(partition is null ? label : $"Partition {partition.Number}: {label}{used}")));
             }
             foreach (var partition in intervals) { if (partition.Offset > cursor) AddSegment(partition.Offset - cursor, null); AddSegment(partition.Length, partition); cursor = Math.Max(cursor, partition.Offset + partition.Length); }
             if (cursor < disk.Size) AddSegment(disk.Size - cursor, null);
-            page.Children.Add(Card(Stack(Text(disk.ToString(), 20), Text($"{disk.Style.ToUpperInvariant()} · ID {disk.DiskId} · sector {disk.SectorSize} B · serial {disk.Serial}"), bar, Action("Image this disk…", () => EditDefinitionAsync(null, disk)))));
+            page.Children.Add(Card(Stack(Text(disk.ToString(), 20), Text($"{disk.Style.ToUpperInvariant()} · ID {disk.DiskId} · sector {disk.SectorSize} B · serial {disk.Serial}"), bar, details, Action("Image this disk…", () => EditDefinitionAsync(null, disk)))));
         }
         if (vm.Disks.Count == 0) page.Children.Add(Text("No disks received from the service."));
     }
+    private static string PartitionName(Partition partition)
+    {
+        string letter = string.IsNullOrEmpty(partition.Letter) ? "" : $"{partition.Letter}:";
+        string name = string.Join(" ", new[] { letter, partition.Label }.Where(s => !string.IsNullOrEmpty(s)));
+        return name.Length > 0 ? name : partition.TypeName;
+    }
+    private static Windows.UI.Color PartitionColor(Partition? partition) => partition switch
+    {
+        null => Microsoft.UI.Colors.DimGray,
+        { IsEsp: true } => Microsoft.UI.Colors.Teal,
+        { TypeName: "Microsoft reserved" } => Microsoft.UI.Colors.SlateGray,
+        { TypeName: "Recovery" } => Microsoft.UI.Colors.Peru,
+        _ => partition.FileSystem?.ToUpperInvariant() switch { "NTFS" => Microsoft.UI.Colors.SteelBlue, "FAT32" or "FAT" => Microsoft.UI.Colors.SeaGreen, "EXFAT" => Microsoft.UI.Colors.DarkGoldenrod, "REFS" => Microsoft.UI.Colors.MediumPurple, _ => Microsoft.UI.Colors.Gray },
+    };
     private void DefinitionsPage()
     {
         page.Children.Add(Action("New definition…", () => EditDefinitionAsync(null)));
@@ -78,7 +98,34 @@ public sealed partial class MainWindow
             page.Children.Add(Card(Stack(Text(image.Path, 18), Text($"{image.Created.ToLocalTime():g} · {ByteSize.Format(image.SizeOnDisk)} · {(image.Encrypted ? "Encrypted" : "Not encrypted")} · {(image.Incomplete ? "INCOMPLETE" : "Complete")}\n{image.Comment}"), Text(string.Join("\n", image.Disks.Select(d => $"Disk {d.Index}: {ByteSize.Format(d.Size)} · {d.Style} · {d.Partitions.Count(p => p.Captured)} captured partitions"))), actions)));
         }
         page.Children.Add(Text("viBoot virtual machines", 20));
-        foreach (var machine in vm.VirtualMachines) page.Children.Add(Card(Row(Text($"{machine.Name} · {machine.State}"), Command("Stop", vm.StopVmCommand, machine))));
+        if (vm.VirtualMachines.Count == 0) page.Children.Add(Text("None running. Start one with viBoot… on an image."));
+        foreach (var machine in vm.VirtualMachines) page.Children.Add(Card(Row(Text($"{machine.Name} · {machine.State}"), Action("Open console", () => { OpenConsole(machine.Name); return Task.CompletedTask; }), Command("Stop", vm.StopVmCommand, machine))));
+    }
+    /// The service runs the VM without a window; Hyper-V's console runs in the user's session.
+    private static void OpenConsole(string name)
+    {
+        var vmconnect = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "vmconnect.exe");
+        if (!File.Exists(vmconnect)) throw new InvalidOperationException("The Hyper-V console (vmconnect.exe) is missing. Enable \"Hyper-V Management Tools\" in Windows Features, or open the VM in Hyper-V Manager.");
+        var start = new System.Diagnostics.ProcessStartInfo(vmconnect) { UseShellExecute = false };
+        start.ArgumentList.Add("localhost");
+        start.ArgumentList.Add(name);
+        System.Diagnostics.Process.Start(start)?.Dispose();
+    }
+    /// Opens the console of the VM a viBoot job creates for `image`, once it runs.
+    private async Task OpenConsoleWhenRunningAsync(string image, HashSet<string> existing)
+    {
+        try
+        {
+            for (var deadline = DateTime.UtcNow.AddMinutes(5); DateTime.UtcNow < deadline; await Task.Delay(TimeSpan.FromSeconds(2)))
+            {
+                var machines = await vm.Rpc.CallAsync<List<VirtualMachine>>("viboot.list");
+                var started = machines.FirstOrDefault(m => !existing.Contains(m.Name) && string.Equals(m.Image, image, StringComparison.OrdinalIgnoreCase));
+                if (started?.State != "running") continue;
+                OpenConsole(started!.Name);
+                return;
+            }
+        }
+        catch (Exception exception) { vm.Error = $"Could not open the VM console: {exception.Message}"; }
     }
     private List<string> ImageFolderSetting() =>
         vm.Settings.Extra.TryGetValue("imageFolders", out var value) && value.ValueKind == JsonValueKind.Array

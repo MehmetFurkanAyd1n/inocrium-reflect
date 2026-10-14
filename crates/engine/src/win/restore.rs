@@ -203,12 +203,32 @@ pub(super) fn retable(head: &[u8], ss: u32, image_size: u64, size: u64, rewrite:
 /// A read-only view of a device with some byte ranges replaced.
 pub(super) struct Patched {
     inner: Arc<dyn BlockDevice>,
+    /// Sorted by offset and not overlapping.
     patches: Vec<(u64, Vec<u8>)>,
 }
 
 impl Patched {
+    /// Where patches overlap, later ones win.
     pub fn new(inner: Arc<dyn BlockDevice>, patches: Vec<(u64, Vec<u8>)>) -> Self {
-        Self { inner, patches }
+        let mut sorted: Vec<(u64, Vec<u8>)> = Vec::with_capacity(patches.len());
+        for (at, data) in patches.into_iter().filter(|(_, d)| !d.is_empty()) {
+            // Usually disjoint; otherwise merge the overlapping ones into a single range.
+            let end = at + data.len() as u64;
+            let first = sorted.partition_point(|(a, d)| a + d.len() as u64 <= at);
+            let last = sorted.partition_point(|(a, _)| *a < end);
+            if first == last {
+                sorted.insert(first, (at, data));
+                continue;
+            }
+            let start = at.min(sorted[first].0);
+            let stop = end.max(sorted[last - 1].0 + sorted[last - 1].1.len() as u64);
+            let mut merged = vec![0u8; (stop - start) as usize];
+            for (a, d) in sorted.drain(first..last).chain(std::iter::once((at, data))) {
+                merged[(a - start) as usize..][..d.len()].copy_from_slice(&d);
+            }
+            sorted.insert(first, (start, merged));
+        }
+        Self { inner, patches: sorted }
     }
 }
 
@@ -225,12 +245,11 @@ impl BlockDevice for Patched {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
         self.inner.read_at(offset, buf)?;
         let end = offset + buf.len() as u64;
-        for (at, data) in &self.patches {
+        let first = self.patches.partition_point(|(at, data)| at + data.len() as u64 <= offset);
+        for (at, data) in self.patches[first..].iter().take_while(|(at, _)| *at < end) {
             let (a, b) = (offset.max(*at), end.min(at + data.len() as u64));
-            if a < b {
-                buf[(a - offset) as usize..(b - offset) as usize]
-                    .copy_from_slice(&data[(a - at) as usize..(b - at) as usize]);
-            }
+            buf[(a - offset) as usize..(b - offset) as usize]
+                .copy_from_slice(&data[(a - at) as usize..(b - at) as usize]);
         }
         Ok(())
     }
@@ -834,5 +853,20 @@ mod tests {
         p.read_at(8, &mut buf).unwrap();
         assert_eq!(buf, [1, 1, 9, 9, 9, 1, 1, 1]);
         assert!(p.write_at(0, &[0]).is_err());
+    }
+
+    #[test]
+    fn patched_merges_overlaps_in_order() {
+        let inner: Arc<dyn BlockDevice> = Arc::new(MemDevice::from_vec(vec![0u8; 64], 512));
+        let patches =
+            vec![(20, vec![5; 4]), (2, vec![1; 4]), (4, vec![2; 4]), (0, vec![3; 1]), (30, vec![]), (7, vec![4; 14])];
+        let p = Patched::new(inner, patches);
+        assert_eq!(p.patches.len(), 2);
+        let mut buf = [0u8; 26];
+        p.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, [3, 0, 1, 1, 2, 2, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 0, 0]);
+        let mut buf = [0u8; 3];
+        p.read_at(19, &mut buf).unwrap();
+        assert_eq!(buf, [4, 4, 5]);
     }
 }

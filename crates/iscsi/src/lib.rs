@@ -63,6 +63,9 @@ pub enum Error {
     /// The device or service did not appear before the deadline.
     #[error("timed out waiting for {0}")]
     Timeout(&'static str),
+    /// A program holds a device of the session open, so Windows refused to log it out.
+    #[error("{0}")]
+    Busy(String),
     /// A local I/O failure.
     #[error(transparent)]
     Io(#[from] io::Error),

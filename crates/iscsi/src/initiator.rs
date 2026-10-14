@@ -295,9 +295,7 @@ pub fn logout(s: &Session) -> Result<()> {
                     Some(veto) => format!("Plug and Play removal refused: {veto}"),
                     None => "Plug and Play removal was not refused".into(),
                 };
-                return Err(Error::Io(std::io::Error::other(format!(
-                    "LogoutIScsiTarget: a device of the session is busy ({pnp})"
-                ))));
+                return Err(Error::Busy(format!("LogoutIScsiTarget: a device of the session is busy ({pnp})")));
             }
             other => return other,
         }

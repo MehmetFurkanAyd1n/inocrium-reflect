@@ -32,7 +32,8 @@ impl Service for Handler {
     }
 
     fn disks_list(&self, _: EmptyParams, _: &ClientInfo) -> Result<Vec<Disk>, RpcError> {
-        disks::list()
+        let mounted: Vec<u32> = self.0.mounts.list().iter().flat_map(|m| m.disks.clone()).collect();
+        disks::list(&mounted)
     }
 
     fn definitions_list(&self, _: EmptyParams, _: &ClientInfo) -> Result<Vec<Definition>, RpcError> {

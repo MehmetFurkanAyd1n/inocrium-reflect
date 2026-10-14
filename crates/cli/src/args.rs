@@ -31,6 +31,9 @@ pub enum Command {
         img: PathBuf,
         #[arg(long)]
         writable: bool,
+        /// Keep the image's NTFS permissions; by default everyone gets full access.
+        #[arg(long)]
+        keep_permissions: bool,
         #[arg(long)]
         disk: Option<u32>,
         #[arg(long, value_parser = positive_u32)]

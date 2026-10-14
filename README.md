@@ -17,7 +17,7 @@ The imaging libraries, background service, GUI, CLI, WiX packaging and administr
 - **VSS sources.** Supported NTFS/ReFS volumes are read through Volume Shadow Copy Service snapshots, including in forensic mode. Unsupported volumes and raw disk regions are read directly. A VSS creation failure aborts the backup rather than silently reading a supported volume live.
 - **Native `.irimg` images.** Independently compressed zstd blocks, optional AES-256-GCM encryption with an Argon2id password KDF, BLAKE3 integrity checks, comments, and split files (`.irimg`, `.i01`, `.i02`, ...). The default block size is 1 MiB and default compression level is 3. See the [image-format reference](docs/image-format.md).
 - **Image verification and VHDX export.** Native verification checks block hashes and, for encrypted images, authentication tags. Windows export creates a VHDX from an image disk.
-- **Read-only or writable mounts.** Images are exposed through a loopback iSCSI target at `127.0.0.1` on an ephemeral port with random CHAP credentials. Writable mounts use temporary copy-on-write files; unmounting discards changes without modifying the source image.
+- **Read-only or writable mounts.** Images are exposed through a loopback iSCSI target at `127.0.0.1` on an ephemeral port with random CHAP credentials. Writable mounts use temporary copy-on-write files; unmounting discards changes without modifying the source image. By default every file and folder of a mounted NTFS volume is open to everyone, so mounts never fail with access denied: the volume's security descriptors are replaced in the exposed blocks, not in the image. `--keep-permissions` (or the GUI's "Keep the image's file permissions") shows the original permissions; viBoot always keeps them. EFS-encrypted file contents stay unreadable.
 - **Whole-disk and single-partition restore.** Whole-disk targets must be at least as large as the imaged disk. GPT structures are recomputed for larger targets; optional extension grows the last partition, with filesystem-extension failures reported as warnings. A partition can be restored into an existing partition of sufficient size or suitable free space on an initialized disk.
 - **Retention.** Keep the last N full images or images younger than N days within a destination/prefix group. Retention removes all split parts of expired images and preserves checkpointed backups and the image just written.
 - **Interrupted-backup primitives.** The engine writes `<image>.irimg.ckpt` checkpoints, can reopen an incomplete image, and can reuse a persistent VSS snapshot. Resume requires the same sources and an available original snapshot. The service resumes interrupted definition backups automatically (see below); direct CLI backups and one-off `backup.start` backups use nonpersistent snapshots and do not provide restart recovery.
@@ -76,6 +76,7 @@ inocrium.exe backup --disk 1 --dest D:\Backups --forensic --keep-days 30
 inocrium.exe verify D:\Backups\workstation-20261014-090507.irimg
 inocrium.exe mount D:\Backups\workstation-20261014-090507.irimg --partition 2
 inocrium.exe mount D:\Backups\workstation-20261014-090507.irimg --writable
+inocrium.exe mount D:\Backups\workstation-20261014-090507.irimg --keep-permissions
 inocrium.exe unmount <id>
 inocrium.exe unmount all
 inocrium.exe export-vhdx D:\Backups\workstation-20261014-090507.irimg D:\Exports\workstation.vhdx
@@ -188,7 +189,7 @@ rustup target add x86_64-pc-windows-msvc
 .\installer\build.ps1
 ```
 
-The script builds release Rust binaries, publishes a self-contained GUI, and builds `installer\out\x64\inocrium-reflect-0.1.1-x64.msi`. ARM64 is available with `-Platform ARM64` and the `aarch64-pc-windows-msvc` toolchain/libraries. See [installer/README.md](installer/README.md) for prerequisites and version options. Test installation on a clean Windows system before release.
+The script builds release Rust binaries, publishes a self-contained GUI, and builds `installer\out\x64\inocrium-reflect-0.1.3-x64.msi`. ARM64 is available with `-Platform ARM64` and the `aarch64-pc-windows-msvc` toolchain/libraries. See [installer/README.md](installer/README.md) for prerequisites and version options. Test installation on a clean Windows system before release.
 
 ## Testing
 

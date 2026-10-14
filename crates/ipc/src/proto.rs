@@ -140,7 +140,8 @@ pub struct ImagesListParams {
 }
 dto!(PathParams { path: String });
 dto!(ImagePasswordParams { path: String, password: Option<String> });
-dto!(MountParams { path: String, password: Option<String>, disk: Option<u32>, partition: Option<u32>, writable: bool });
+// `keep_permissions`: expose NTFS permissions as imaged instead of giving everyone full access.
+dto!(MountParams { path: String, password: Option<String>, disk: Option<u32>, partition: Option<u32>, writable: bool, keep_permissions: Option<bool> });
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MountId {
@@ -256,7 +257,7 @@ mod tests {
         check!(
             MountParams,
             serde_json::json!({ "path": "image", "password": password, "disk": null,
-            "partition": null, "writable": false })
+            "partition": null, "writable": false, "keepPermissions": null })
         );
         check!(
             RestoreParams,

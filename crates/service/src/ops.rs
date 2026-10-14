@@ -524,6 +524,8 @@ pub fn submit_viboot(app: &Arc<App>, p: VibootStartParams) -> Result<Uuid, RpcEr
                 disk: Some(p.disk),
                 partition: None,
                 writable: true,
+                // The VM boots this Windows as its own; its permissions must stay intact.
+                keep_permissions: Some(true),
             };
             let mount =
                 job_app.mount_raw(&path, password.as_deref(), &params, false).map_err(|e| anyhow!(e.message))?;

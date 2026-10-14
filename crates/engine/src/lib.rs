@@ -5,6 +5,7 @@
 mod error;
 pub mod extents;
 pub mod fs;
+pub mod ntfs;
 pub mod plan;
 pub mod progress;
 

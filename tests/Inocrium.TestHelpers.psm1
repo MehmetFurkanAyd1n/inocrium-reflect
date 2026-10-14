@@ -415,10 +415,11 @@ function Start-TestImageMount {
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Workspace, [Parameter(Mandatory)][string] $Exe,
         [Parameter(Mandatory)][string] $Image, [Parameter(Mandatory)][string] $PayloadName,
-        [switch] $Writable)
+        [switch] $Writable, [switch] $KeepPermissions)
     $before = @(Get-Volume | Where-Object { $_.DriveLetter } | ForEach-Object { [string]$_.DriveLetter })
     $arguments = @('mount', $Image)
     if ($Writable) { $arguments += '--writable' }
+    if ($KeepPermissions) { $arguments += '--keep-permissions' }
     $service = Get-Service -Name InocriumReflect -ErrorAction SilentlyContinue
     $reason = New-Object 'System.Collections.Generic.List[string]'
     if ($null -ne $service -and $service.Status -eq 'Running') {
