@@ -1,9 +1,9 @@
+using System.Collections.Specialized;
 using Inocrium.App.Models;
 using Inocrium.App.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-using Windows.Storage.Pickers;
 
 namespace Inocrium.App;
 public sealed partial class MainWindow : Window
@@ -14,6 +14,7 @@ public sealed partial class MainWindow : Window
     private readonly InfoBar errorBar = new() { IsClosable = true, Severity = InfoBarSeverity.Error, Title = "Action failed" };
     private readonly StackPanel page = new() { Spacing = 16, Margin = new Thickness(28) };
     private string currentPage = "Disks";
+    private readonly Dictionary<Guid, (ProgressBar Bar, TextBlock Summary)> jobControls = [];
     private readonly SemaphoreSlim passwordDialogGate = new(1);
     public MainWindow(ShellViewModel viewModel)
     {
@@ -28,13 +29,19 @@ public sealed partial class MainWindow : Window
         {
             if (args.PropertyName is nameof(vm.Status) or nameof(vm.Connected)) { connectionBar.Message = vm.Status; connectionBar.IsOpen = !vm.Connected; }
             if (args.PropertyName == nameof(vm.Error)) { errorBar.Message = vm.Error; errorBar.IsOpen = vm.Error.Length > 0; }
-            if (args.PropertyName == nameof(vm.Settings) && currentPage == "Settings") RenderPage();
+            if (args.PropertyName == nameof(vm.Settings) && currentPage is "Settings" or "Existing images") RenderPage();
         };
         vm.Disks.CollectionChanged += (_, _) => Changed("Disks");
         vm.Definitions.CollectionChanged += (_, _) => { Changed("Backup definitions"); Changed("Schedule"); };
         vm.Images.CollectionChanged += (_, _) => Changed("Existing images");
         vm.Mounts.CollectionChanged += (_, _) => Changed("Mounts");
-        vm.Jobs.CollectionChanged += (_, _) => Changed("Activity / History");
+        vm.Jobs.CollectionChanged += (_, args) =>
+        {
+            // Progress notifications update the job's controls in place instead of rebuilding the page.
+            if (args.Action == NotifyCollectionChangedAction.Replace && args.NewItems?[0] is Job job && args.OldItems?[0] is Job old
+                && old.State == job.State && jobControls.TryGetValue(job.Id, out var controls)) { ShowProgress(controls.Bar, controls.Summary, job); return; }
+            Changed("Activity / History");
+        };
         vm.History.CollectionChanged += (_, _) => Changed("Activity / History");
         vm.Credentials.CollectionChanged += (_, _) => Changed("Settings");
         vm.VirtualMachines.CollectionChanged += (_, _) => Changed("Existing images");
@@ -76,17 +83,9 @@ public sealed partial class MainWindow : Window
     private static Button Command(string title, System.Windows.Input.ICommand command, object? parameter = null) => new() { Content = title, Command = command, CommandParameter = parameter };
     private ContentDialog Dialog(string title, UIElement content, string primary = "OK") => new() { XamlRoot = ((FrameworkElement)Content).XamlRoot, Title = title, Content = new ScrollViewer { Content = content, MaxHeight = 600 }, PrimaryButtonText = primary, CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Close };
     private async Task<bool> ConfirmAsync(string title, string text, string action) => await Dialog(title, Text(text), action).ShowAsync() == ContentDialogResult.Primary;
-    private async Task<string?> FolderAsync()
-    {
-        var picker = new FolderPicker(); picker.FileTypeFilter.Add("*");
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
-        return (await picker.PickSingleFolderAsync())?.Path;
-    }
-    private async Task<string?> SaveVhdxAsync()
-    {
-        var picker = new FileSavePicker { SuggestedFileName = "disk" }; picker.FileTypeChoices.Add("Virtual hard disk", new List<string> { ".vhdx" });
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
-        return (await picker.PickSaveFileAsync())?.Path;
-    }
+    private IntPtr Hwnd => WinRT.Interop.WindowNative.GetWindowHandle(this);
+    private Task<string?> FolderAsync(string title = "Choose a folder") => Task.FromResult(FileDialogs.PickFolder(Hwnd, title));
+    private Task<string?> SaveVhdxAsync() => Task.FromResult(FileDialogs.SaveFile(Hwnd, "Export as VHDX", "disk.vhdx", "vhdx", ("Virtual hard disk", "*.vhdx")));
+    private Task<string?> ImageFileAsync() => Task.FromResult(FileDialogs.PickFile(Hwnd, "Open an image", ("Disk images (*.irimg, *.mrimgx)", "*.irimg;*.mrimgx"), ("All files", "*.*")));
     private async Task RefreshAsync() => await vm.RefreshCommand.ExecuteAsync(null);
 }

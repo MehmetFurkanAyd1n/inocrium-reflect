@@ -326,6 +326,27 @@ impl Store {
         out
     }
 
+    /// Adds `folder` to the `imageFolders` setting unless `images.list` already searches it,
+    /// so images written by one-off backups show up without configuration.
+    pub fn remember_image_folder(&self, folder: &str) -> Result<(), RpcError> {
+        let folder = folder.trim();
+        if folder.is_empty() || !Path::new(folder).is_absolute() {
+            return Ok(());
+        }
+        let key = crate::images::path_key(Path::new(folder));
+        let searched = self.image_folders().into_iter().chain(self.definitions().into_iter().map(|d| d.destination));
+        if searched.into_iter().any(|f| !f.trim().is_empty() && crate::images::path_key(Path::new(f.trim())) == key) {
+            return Ok(());
+        }
+        let mut settings = self.settings();
+        let folders = settings.extra.entry("imageFolders").or_insert_with(|| serde_json::json!([]));
+        if !folders.is_array() {
+            *folders = serde_json::json!([]);
+        }
+        folders.as_array_mut().unwrap().push(serde_json::Value::String(folder.to_string()));
+        self.set_settings(settings)
+    }
+
     // ---- credentials ----
 
     pub fn credentials(&self) -> Vec<Credential> {
@@ -550,5 +571,17 @@ mod tests {
         s.extra.insert("imageFolders".into(), serde_json::json!([r"E:\Images"]));
         store.set_settings(s).unwrap();
         assert_eq!(Store::load(store.paths()).image_folders(), vec![r"E:\Images".to_string()]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remembered_image_folders() {
+        let (_dir, store) = store();
+        store.remember_image_folder(r"D:\Backups").unwrap();
+        // Already searched (case and trailing separator ignored), relative or empty: unchanged.
+        for folder in [r"d:\backups\", "relative", "  "] {
+            store.remember_image_folder(folder).unwrap();
+        }
+        assert_eq!(Store::load(store.paths()).image_folders(), vec![r"D:\Backups".to_string()]);
     }
 }

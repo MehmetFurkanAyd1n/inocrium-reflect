@@ -22,14 +22,22 @@ public sealed class RpcService(string pipeName = "inocrium-reflect") : IDisposab
     public event Action? DefinitionsChanged;
     public void Start() { lock (gate) { ObjectDisposedException.ThrowIf(disposed, this); reconnect ??= ReconnectAsync(); } }
     public bool IsConnected { get { lock (gate) return rpc is { IsDisposed: false }; } }
-    public async Task<T> CallAsync<T>(string method, object? parameters = null)
+    public Task<T> CallAsync<T>(string method, object? parameters = null) => CallAsync<T>(method, parameters, null);
+    /// `accepted` receives a password the user entered after a rejection, once the call succeeds
+    /// with it, so the caller can reuse it for follow-up calls on the same image.
+    public async Task<T> CallAsync<T>(string method, object? parameters, Action<string>? accepted)
     {
         JsonObject? retryParameters = null;
         try
         {
             while (true)
             {
-                try { return await SendAsync<T>(method, retryParameters ?? parameters); }
+                try
+                {
+                    var result = await SendAsync<T>(method, retryParameters ?? parameters);
+                    if (accepted is not null && retryParameters?["password"]?.GetValue<string>() is { } used) accepted(used);
+                    return result;
+                }
                 catch (RemoteInvocationException error) when (IsPasswordError(error) && PasswordRequested is not null && SupportsPassword(method))
                 {
                     // Only rejected authentication requests are retried. Never replay a request

@@ -293,12 +293,13 @@ fn mbr_extend() {
     assert!(read(&target, 11 * MIB..12 * MIB).iter().all(|&b| b == 0));
 }
 
-/// Cancels the backup after a number of reads.
+/// Cancels the backup after a number of reads, or without `cancel` fails the next read the way a
+/// crash would end the run: without a final checkpoint.
 struct CancelAfter {
     inner: Arc<dyn BlockDevice>,
     reads: AtomicU64,
     limit: u64,
-    cancel: Cancel,
+    cancel: Option<Cancel>,
 }
 
 impl BlockDevice for CancelAfter {
@@ -312,8 +313,11 @@ impl BlockDevice for CancelAfter {
         true
     }
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
-        if self.reads.fetch_add(1, Ordering::SeqCst) + 1 >= self.limit {
-            self.cancel.cancel();
+        let n = self.reads.fetch_add(1, Ordering::SeqCst) + 1;
+        match &self.cancel {
+            Some(cancel) if n >= self.limit => cancel.cancel(),
+            None if n > self.limit => return Err(io::Error::other("source disk lost")),
+            _ => {}
         }
         self.inner.read_at(offset, buf)
     }
@@ -330,11 +334,11 @@ fn resume_after_cancel() {
     let opts = options(Some("pw"), None);
 
     let cancel = Cancel::new();
-    let wrap = |s: SourcePartition, limit, cancel: &Cancel| -> (SourcePartition, Arc<CancelAfter>) {
-        let dev = Arc::new(CancelAfter { inner: s.device, reads: AtomicU64::new(0), limit, cancel: cancel.clone() });
+    let wrap = |s: SourcePartition, limit, cancel: Option<&Cancel>| -> (SourcePartition, Arc<CancelAfter>) {
+        let dev = Arc::new(CancelAfter { inner: s.device, reads: AtomicU64::new(0), limit, cancel: cancel.cloned() });
         (SourcePartition { number: s.number, device: dev.clone(), used: s.used }, dev)
     };
-    let (p1, first) = wrap(source_partition(&disk, &d, 1, None), 12, &cancel);
+    let (p1, first) = wrap(source_partition(&disk, &d, 1, None), 12, Some(&cancel));
     let src = SourceDisk { device: disk.clone(), manifest: d.clone(), partitions: vec![p1], forensic_gaps: false };
     let caller = serde_json::json!({ "definition": "abc" });
     let err = backup(&dest, &[src], &opts, None, caller.clone(), &no_progress, &cancel).unwrap_err();
@@ -372,12 +376,25 @@ fn resume_after_cancel() {
         assert!(backup(&dest, &[changed], &opts, Some(&ckpt), caller.clone(), &no_progress, &Cancel::new()).is_err());
     }
 
-    let (p1, second) = wrap(source_partition(&disk, &d, 1, None), u64::MAX, &Cancel::new());
+    // A resume that dies before its first periodic checkpoint has still recorded its nonce
+    // counter, so resuming again cannot reuse the nonces it sealed with.
+    let (p1, middle) = wrap(source_partition(&disk, &d, 1, None), 4, None);
     let src = SourceDisk { device: disk.clone(), manifest: d.clone(), partitions: vec![p1], forensic_gaps: false };
-    backup(&dest, &[src], &opts, Some(&ckpt), caller, &no_progress, &Cancel::new()).unwrap();
+    let err = backup(&dest, &[src], &opts, Some(&ckpt), caller.clone(), &no_progress, &Cancel::new()).unwrap_err();
+    assert!(!matches!(err, Error::Cancelled), "{err:?}");
+    let resumed = load_checkpoint(&dest).unwrap().expect("checkpoint rewritten");
+    assert!(resumed.nonce_counter >= ckpt.nonce_counter + (1 << 40), "nonce counter advanced on resume");
+    let read_middle = middle.reads.load(Ordering::SeqCst);
+
+    let (p1, second) = wrap(source_partition(&disk, &d, 1, None), u64::MAX, Some(&Cancel::new()));
+    let src = SourceDisk { device: disk.clone(), manifest: d.clone(), partitions: vec![p1], forensic_gaps: false };
+    backup(&dest, &[src], &opts, Some(&resumed), caller, &no_progress, &Cancel::new()).unwrap();
     assert!(!checkpoint_path(&dest).exists());
     let reread = second.reads.load(Ordering::SeqCst);
-    assert!(reread + read_before >= 40 && reread < 40, "blocks already in the image were skipped ({reread} reads)");
+    assert!(
+        reread + read_middle + read_before >= 40 && reread < 40,
+        "blocks already in the image were skipped ({reread} reads)"
+    );
 
     let reader = ImageReader::open(&dest, Some("pw")).unwrap();
     assert!(verify(&reader, &no_progress, &Cancel::new()).unwrap().ok());

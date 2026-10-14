@@ -113,7 +113,7 @@ public sealed partial class MainWindow
         {
             if (action == "verify") { await vm.Rpc.CallAsync<Guid>("images.verify", new { path = image.Path, password }); await RefreshAsync(); return; }
             // Inspect provides authenticated, current metadata before choosing captured partitions.
-            var details = await vm.Rpc.CallAsync<ImageSummary>("images.inspect", new { path = image.Path, password });
+            var details = await vm.Rpc.CallAsync<ImageSummary>("images.inspect", new { path = image.Path, password }, entered => password = entered);
             if (action == "inspect") { await Dialog("Image details", Text(JsonSerializer.Serialize(details, new JsonSerializerOptions { WriteIndented = true })), "Close").ShowAsync(); return; }
             var diskChoice = new ComboBox { Header = "Image disk", ItemsSource = details.Disks, SelectedIndex = details.Disks.Count > 0 ? 0 : -1, MinWidth = 350 };
             var partitionChoice = new ComboBox { Header = "Captured partition (whole disk if unset)", MinWidth = 350 };

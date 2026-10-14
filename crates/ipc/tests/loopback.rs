@@ -51,8 +51,11 @@ fn admin_gate_rejects_unelevated_client_before_dispatch() {
     let is_admin: bool = client.call("admin", json!({})).unwrap();
     server.shutdown();
     drop(client);
-    if is_admin { return; } // Elevated test runners are allowed by the admin gate.
-    let server = Server::start_with_options(&name, Arc::new(Echo), ServerOptions { require_admin: true, ..options }).unwrap();
+    if is_admin {
+        return;
+    } // Elevated test runners are allowed by the admin gate.
+    let server =
+        Server::start_with_options(&name, Arc::new(Echo), ServerOptions { require_admin: true, ..options }).unwrap();
     let client = Client::connect(&name, Duration::from_secs(3)).unwrap();
     assert!(matches!(client.call::<_, Value>("echo", json!({})), Err(ipc::client::Error::Disconnected)));
     server.shutdown();

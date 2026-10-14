@@ -171,7 +171,9 @@ impl ImageWriter {
     }
 
     /// Reopens an interrupted image at `checkpoint`. Anything written after the checkpoint is
-    /// discarded. The password must match the one the image was created with.
+    /// discarded. The password must match the one the image was created with. Callers should
+    /// durably replace their stored checkpoint with [`Self::checkpoint`] before appending, so a
+    /// second resume never reuses this run's nonces.
     pub fn resume(path: &Path, checkpoint: &Checkpoint, password: Option<&str>) -> Result<Self> {
         let base = image_base_path(path);
         let first = image_file_path(&base, 0);

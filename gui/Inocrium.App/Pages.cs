@@ -54,8 +54,23 @@ public sealed partial class MainWindow
     }
     private void ImagesPage()
     {
-        page.Children.Add(Row(Action("Add image folder…", async () => { var path = await FolderAsync(); if (path is not null && !vm.ImageFolders.Contains(path)) { vm.ImageFolders.Add(path); await RefreshAsync(); } }), Action("Use default folders", async () => { vm.ImageFolders.Clear(); await RefreshAsync(); })));
-        page.Children.Add(Text(vm.ImageFolders.Count == 0 ? "Showing configured image folders." : string.Join("\n", vm.ImageFolders)));
+        var typed = new TextBox { Header = "Image folder (local path or UNC)", PlaceholderText = @"D:\Backups", MinWidth = 380 };
+        page.Children.Add(Row(Action("Add image folder…", async () => { var path = await FolderAsync("Choose a folder that contains images"); if (path is not null) await AddImageFolderAsync(path); }),
+            Action("Open image file…", async () => { var file = await ImageFileAsync(); if (file is not null) await AddImageFolderAsync(Path.GetDirectoryName(file)!); })));
+        var add = Action("Add folder", () => AddImageFolderAsync(typed.Text)); add.VerticalAlignment = VerticalAlignment.Bottom;
+        page.Children.Add(Row(typed, add));
+        var searched = new StackPanel { Spacing = 6 };
+        searched.Children.Add(Text("Folders searched for images", 18));
+        foreach (var folder in ImageFolderSetting())
+        {
+            var remove = Action("Remove", async () => await SaveImageFoldersAsync(ImageFolderSetting().Where(f => !string.Equals(f, folder, StringComparison.OrdinalIgnoreCase)).ToList()));
+            searched.Children.Add(Row(Text(folder), remove));
+        }
+        if (!string.IsNullOrWhiteSpace(vm.Settings.DefaultDestination)) searched.Children.Add(Text($"{vm.Settings.DefaultDestination} (default destination)"));
+        foreach (var definition in vm.Definitions.Where(d => !string.IsNullOrWhiteSpace(d.Destination))) searched.Children.Add(Text($"{definition.Destination} (definition \"{definition.Name}\")"));
+        if (searched.Children.Count == 1) searched.Children.Add(Text("None yet. Add the folder your backups are in."));
+        page.Children.Add(Card(searched));
+        if (vm.Images.Count == 0) page.Children.Add(Text("No images found in these folders."));
         foreach (var image in vm.Images)
         {
             var actions = new StackPanel { Spacing = 6 };
@@ -65,6 +80,28 @@ public sealed partial class MainWindow
         page.Children.Add(Text("viBoot virtual machines", 20));
         foreach (var machine in vm.VirtualMachines) page.Children.Add(Card(Row(Text($"{machine.Name} · {machine.State}"), Command("Stop", vm.StopVmCommand, machine))));
     }
+    private List<string> ImageFolderSetting() =>
+        vm.Settings.Extra.TryGetValue("imageFolders", out var value) && value.ValueKind == JsonValueKind.Array
+            ? value.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString()!).ToList()
+            : [];
+    private async Task AddImageFolderAsync(string folder)
+    {
+        folder = folder.Trim().Trim('"');
+        if (!Path.IsPathFullyQualified(folder)) throw new InvalidOperationException(@"Enter a full folder path, such as D:\Backups or \\server\share\backups.");
+        var folders = ImageFolderSetting();
+        if (folders.Contains(folder, StringComparer.OrdinalIgnoreCase)) { await RefreshAsync(); return; }
+        folders.Add(folder);
+        await SaveImageFoldersAsync(folders);
+    }
+    /// Image folders live in the service's settings, so the service and every client search them.
+    private async Task SaveImageFoldersAsync(List<string> folders)
+    {
+        var current = vm.Settings;
+        var settings = new Settings { DefaultDestination = current.DefaultDestination, Threads = current.Threads, LogRetentionDays = current.LogRetentionDays, Extra = new(current.Extra) };
+        settings.Extra["imageFolders"] = JsonSerializer.SerializeToElement(folders);
+        await vm.Rpc.CallAsync("settings.set", new { settings });
+        await RefreshAsync();
+    }
     private void MountsPage()
     {
         page.Children.Add(Command("Unmount all", vm.UnmountAllCommand));
@@ -72,13 +109,23 @@ public sealed partial class MainWindow
     }
     private void ActivityPage()
     {
+        jobControls.Clear();
         foreach (var job in vm.Jobs)
         {
-            var progress = new ProgressBar { Minimum = 0, Maximum = 100, Value = job.Progress.Percent, IsIndeterminate = job.State == "queued" || (job.State == "running" && job.Progress.BytesTotal == 0) };
-            page.Children.Add(Card(Stack(Text($"{job.Title} · {job.State}", 18), progress, Text(job.Progress.Summary), Text(job.Error ?? ""), Command("Cancel", vm.CancelJobCommand, job))));
+            var progress = new ProgressBar { Minimum = 0, Maximum = 100 }; var summary = Text("");
+            ShowProgress(progress, summary, job); jobControls[job.Id] = (progress, summary);
+            var card = Stack(Text($"{job.Title} · {job.State}", 18), progress, summary, Text(job.Error ?? ""));
+            if (job.State is "queued" or "running") card.Children.Add(Command("Cancel", vm.CancelJobCommand, job));
+            page.Children.Add(Card(card));
         }
         page.Children.Add(Text("History", 22));
         foreach (var entry in vm.History) page.Children.Add(Card(Stack(Text($"{entry.Title} · {entry.State}", 18), Text($"{entry.Started.ToLocalTime():g} → {entry.Finished?.ToLocalTime().ToString("g")} · {ByteSize.Format(entry.Bytes)}\n{entry.Error}"), Action("View log", async () => { var log = await vm.Rpc.CallAsync<string>("logs.read", new { jobId = entry.JobId }); await Dialog("Job log", new TextBox { Text = log, IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinWidth = 500 }, "Close").ShowAsync(); }))));
+    }
+    private static void ShowProgress(ProgressBar bar, TextBlock summary, Job job)
+    {
+        bar.Value = job.Progress.Percent;
+        bar.IsIndeterminate = job.State == "queued" || (job.State == "running" && job.Progress.BytesTotal == 0);
+        summary.Text = job.Progress.Summary;
     }
     private void SettingsPage()
     {

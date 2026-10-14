@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Inocrium.App.Models;
@@ -21,7 +22,6 @@ public partial class ShellViewModel : ObservableObject
     public ObservableCollection<HistoryEntry> History { get; } = [];
     public ObservableCollection<Credential> Credentials { get; } = [];
     public ObservableCollection<VirtualMachine> VirtualMachines { get; } = [];
-    public List<string> ImageFolders { get; } = [];
     [ObservableProperty] private string status = "Connecting to service…";
     [ObservableProperty] private string error = "";
     [ObservableProperty] private bool connected;
@@ -56,18 +56,25 @@ public partial class ShellViewModel : ObservableObject
                 refreshPending = false;
                 await LoadAsync("disks.list", Disks);
                 await LoadAsync("definitions.list", Definitions);
-                await LoadAsync("images.list", Images, new { folders = ImageFolders.Count == 0 ? null : ImageFolders });
+                await LoadAsync("images.list", Images);
                 await LoadAsync("mounts.list", Mounts);
                 await LoadAsync("jobs.list", Jobs);
                 await LoadAsync("history.list", History, new { limit = 100 });
                 await LoadAsync("credentials.list", Credentials);
                 await LoadAsync("viboot.list", VirtualMachines);
-                await ExecuteAsync(async () => Settings = await Rpc.CallAsync<Settings>("settings.get"));
+                await ExecuteAsync(async () => { var current = await Rpc.CallAsync<Settings>("settings.get"); if (JsonSerializer.Serialize(current) != JsonSerializer.Serialize(Settings)) Settings = current; });
             } while (refreshPending && Connected);
         }
         finally { refreshGate.Release(); }
     }
-    private async Task LoadAsync<T>(string method, ObservableCollection<T> target, object? parameters = null) => await ExecuteAsync(async () => { var values = await Rpc.CallAsync<List<T>>(method, parameters); target.Clear(); foreach (var value in values) target.Add(value); });
+    // Pages are rebuilt on every collection change; leaving unchanged lists alone keeps their
+    // buttons alive, so a refresh between pointer press and release cannot swallow a click.
+    private async Task LoadAsync<T>(string method, ObservableCollection<T> target, object? parameters = null) => await ExecuteAsync(async () =>
+    {
+        var values = await Rpc.CallAsync<List<T>>(method, parameters);
+        if (JsonSerializer.Serialize(values) == JsonSerializer.Serialize(target.ToList())) return;
+        target.Clear(); foreach (var value in values) target.Add(value);
+    });
     [RelayCommand] private async Task RunDefinitionAsync(Definition definition) => await ExecuteAsync(async () =>
     {
         try { await Rpc.CallAsync<Guid>("definitions.run", new { id = definition.Id }); }

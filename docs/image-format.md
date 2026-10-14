@@ -223,7 +223,7 @@ Data-block AAD is 32 bytes:
 
 All numeric AAD fields are little-endian. This binds encrypted data to its logical position. Metadata AAD is only the 16-byte image UUID. Metadata is compressed before encryption; block compression, when used, also precedes encryption. Neither has a separate nonce prefix in its stored payload: counters come from the index/footer and domains are implied.
 
-On resume, the writer sets the counter to `checkpoint.nonce_counter.saturating_add(1 << 40)` to advance past potentially consumed counters after the saved checkpoint. Later split parts are removed and the saved file is truncated to the checkpoint offset before writing continues.
+On resume, the writer starts the counter at `checkpoint.nonce_counter + 2^40` plus a random 56-bit offset, which skips counters consumed after the saved checkpoint. It refuses a start that leaves less than 2^48 counters before the counter would wrap. Before anything is sealed, the engine durably replaces the `.irimg.ckpt` with one holding the new counter, so a resume that dies before its first periodic checkpoint cannot make the next resume reuse its nonces. Later split parts are removed and the saved file is truncated to the checkpoint offset before writing continues.
 
 Headers and footers are not encrypted. They reveal format version, flags, UUID, block size, creation time, KDF/key-slot parameters, file numbering and metadata location/lengths. An encrypted image's comments, source information, disk layout, raw disk regions and block index are inside encrypted metadata.
 

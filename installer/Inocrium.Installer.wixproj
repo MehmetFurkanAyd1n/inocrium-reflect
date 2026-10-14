@@ -9,7 +9,7 @@
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
     <InstallerPlatform Condition="'$(Platform)' == 'x64'">x64</InstallerPlatform>
     <InstallerPlatform Condition="'$(Platform)' == 'ARM64'">arm64</InstallerPlatform>
-    <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.0</ProductVersion>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.1</ProductVersion>
     <OutputName>inocrium-reflect-$(ProductVersion)-$(Platform)</OutputName>
     <OutputPath>$(MSBuildThisFileDirectory)out\$(Platform)\</OutputPath>
     <RustOutDir Condition="'$(RustOutDir)' == ''">$(MSBuildThisFileDirectory)..\target\release</RustOutDir>

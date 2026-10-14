@@ -53,7 +53,13 @@ pub fn submit_adhoc_backup(app: &Arc<App>, mut def: Definition, password: Option
         return Err(RpcError::new(PASSWORD_REQUIRED, "an encrypted backup needs a password"));
     }
     let password = if def.encrypt { password } else { None };
-    submit_backup(app, def, password, false)
+    let destination = def.destination.clone();
+    let id = submit_backup(app, def, password, false)?;
+    // A one-off destination is not a definition's, so images.list would not find the image.
+    if let Err(e) = app.store.remember_image_folder(&destination) {
+        tracing::warn!("could not remember image folder {destination}: {}", e.message);
+    }
+    Ok(id)
 }
 
 fn submit_backup(app: &Arc<App>, def: Definition, password: Option<String>, stored: bool) -> Result<Uuid, RpcError> {

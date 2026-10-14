@@ -111,8 +111,13 @@ fn save_checkpoint(image: &Path, ckpt: &Checkpoint) -> Result<()> {
     let path = checkpoint_path(image);
     let mut tmp = path.clone().into_os_string();
     tmp.push(".tmp");
-    std::fs::write(&tmp, serde_json::to_vec(ckpt)?)?;
+    let mut file = std::fs::File::create(&tmp)?;
+    std::io::Write::write_all(&mut file, &serde_json::to_vec(ckpt)?)?;
+    file.sync_all()?;
+    drop(file);
     std::fs::rename(&tmp, &path)?;
+    // Flush the renamed file too, so the replacement survives a power loss.
+    std::fs::OpenOptions::new().write(true).open(&path)?.sync_all()?;
     Ok(())
 }
 
@@ -280,6 +285,12 @@ pub fn backup(
     let bs = writer.block_size() as u64;
     let engine_state = serde_json::to_value(EngineState { created: created.clone(), disks: manifests.clone() })?;
     let user = serde_json::json!({ "engine": engine_state, "caller": caller_state });
+    if resume.is_some() {
+        // Record the resumed run's nonce counter before anything is sealed. A later resume then
+        // starts past every nonce this run can use, even if it stops before its first periodic
+        // checkpoint, instead of relying on the random offset alone.
+        save_checkpoint(dest, &writer.checkpoint(user.clone())?)?;
+    }
 
     // Totals and blocks already in the image.
     let mut total = 0u64;

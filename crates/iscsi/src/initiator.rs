@@ -272,24 +272,26 @@ pub fn session_disks(s: &Session, timeout: Duration) -> Result<Vec<u32>> {
 const DEVICE_BUSY_ON_SESSION: u32 = 0xEFFF_0040;
 /// How long [`logout`] keeps retrying while the session's device is busy.
 const LOGOUT_BUSY_TIMEOUT: Duration = Duration::from_secs(15);
+/// How often [`logout`] repeats a refused Plug and Play removal, in case the holder let go.
+const REMOVAL_RETRY: Duration = Duration::from_secs(5);
 
 /// Log out a session; the caller retains responsibility for removing its portal. When a disk
 /// of the session is busy, its removal is requested through Plug and Play first, as "Safely
 /// Remove Hardware" does, so holders of open handles are told to close them.
 pub fn logout(s: &Session) -> Result<()> {
     let started = Instant::now();
-    let mut removal: Option<Option<String>> = None;
+    let mut removal: Option<(Instant, Option<String>)> = None;
     loop {
         let mut id = native(s.session_id);
         match unsafe { check(LogoutIScsiTarget(&mut id), "LogoutIScsiTarget") } {
             Err(Error::Win32 { code: DEVICE_BUSY_ON_SESSION, .. }) if started.elapsed() < LOGOUT_BUSY_TIMEOUT => {
-                if removal.is_none() {
-                    removal = Some(remove_session_devices(s));
+                if removal.as_ref().is_none_or(|(at, _)| at.elapsed() >= REMOVAL_RETRY) {
+                    removal = Some((Instant::now(), remove_session_devices(s)));
                 }
                 thread::sleep(Duration::from_millis(500));
             }
             Err(Error::Win32 { code: DEVICE_BUSY_ON_SESSION, .. }) => {
-                let pnp = match removal.flatten() {
+                let pnp = match removal.and_then(|(_, veto)| veto) {
                     Some(veto) => format!("Plug and Play removal refused: {veto}"),
                     None => "Plug and Play removal was not refused".into(),
                 };
@@ -305,7 +307,7 @@ pub fn logout(s: &Session) -> Result<()> {
 /// Requests Plug and Play removal of the session's devices; describes any veto.
 fn remove_session_devices(s: &Session) -> Option<String> {
     use windows::Win32::Devices::DeviceAndDriverInstallation::{
-        CM_Query_And_Remove_SubTreeW, CM_REMOVE_NO_RESTART, CR_SUCCESS, PNP_VETO_TYPE,
+        CM_Query_And_Remove_SubTreeW, PNP_VetoOutstandingOpen, CM_REMOVE_NO_RESTART, CR_SUCCESS, PNP_VETO_TYPE,
     };
     let mut id = native(s.session_id);
     let mut count = 0;
@@ -325,8 +327,16 @@ fn remove_session_devices(s: &Session) -> Option<String> {
             CM_Query_And_Remove_SubTreeW(d.DeviceInstance, Some(&mut veto), Some(&mut name), CM_REMOVE_NO_RESTART)
         };
         if r != CR_SUCCESS {
+            // The process behind an outstanding open is recorded only in the event log
+            // (Microsoft-Windows-Kernel-PnP/Configuration, event 225).
+            let hint = if veto == PNP_VetoOutstandingOpen {
+                "; a program holds the disk open, such as Task Manager's Performance page or a disk utility. \
+                 Kernel-PnP event 225 names it"
+            } else {
+                ""
+            };
             vetoes.push(format!(
-                "disk {} was vetoed (CONFIGRET {}, veto type {}, by {:?})",
+                "disk {} was vetoed (CONFIGRET {}, veto type {}, by {:?}{hint})",
                 d.StorageDeviceNumber.DeviceNumber,
                 r.0,
                 veto.0,
