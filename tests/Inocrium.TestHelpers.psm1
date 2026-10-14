@@ -344,7 +344,7 @@ function Get-NewDriveLetter {
         $candidates += @(Get-Volume | Where-Object { $_.DriveLetter -and [string]$_.DriveLetter -notin $Before } |
             ForEach-Object { [string]$_.DriveLetter })
         foreach ($letter in @($candidates | Select-Object -Unique)) {
-            if (Test-Path -LiteralPath (Join-Path ($letter + ':\') $PayloadName) -PathType Container) { return $letter }
+            if ([IO.Directory]::Exists([IO.Path]::Combine($letter + ':\', $PayloadName))) { return $letter }
         }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
@@ -469,10 +469,10 @@ function Stop-TestImageMount {
     }
     else { Stop-InocriumProcess -Handle $Mount.Handle }
     if ($Mount.Letter) {
-        $payload = Join-Path ($Mount.Letter + ':\') $Mount.PayloadName
+        $payload = [IO.Path]::Combine($Mount.Letter + ':\', $Mount.PayloadName)
         $deadline = [DateTime]::UtcNow.AddSeconds(30)
-        # Once the drive letter is gone, Test-Path reports a missing drive as an error.
-        while (Test-Path -LiteralPath $payload -ErrorAction SilentlyContinue) {
+        # Once the drive letter is gone, PowerShell path cmdlets fail with a missing drive; .NET does not.
+        while ([IO.Directory]::Exists($payload)) {
             if ([DateTime]::UtcNow -ge $deadline) { throw "Image mount still accessible after unmount: $payload" }
             Start-Sleep -Milliseconds 250
         }
