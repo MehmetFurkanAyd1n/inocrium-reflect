@@ -30,7 +30,7 @@ pub const IQN_PREFIX: &str = "iqn.2026-01.org.inocrium:image-";
 const DISK_TIMEOUT: Duration = Duration::from_secs(30);
 const VOLUME_TIMEOUT: Duration = Duration::from_secs(20);
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MountRequest {
     pub image: PathBuf,
@@ -43,6 +43,32 @@ pub struct MountRequest {
     pub partition: Option<u32>,
     /// Give volumes without a drive letter a free one.
     pub assign_letters: bool,
+}
+
+impl std::fmt::Debug for MountRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MountRequest")
+            .field("image", &self.image)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("writable", &self.writable)
+            .field("disk", &self.disk)
+            .field("partition", &self.partition)
+            .field("assign_letters", &self.assign_letters)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn request_debug_redacts_password() {
+        let req = MountRequest { password: Some("private mount password".into()), ..Default::default() };
+        let debug = format!("{req:?}");
+        assert!(!debug.contains("private mount password"));
+        assert!(debug.contains("<redacted>"));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

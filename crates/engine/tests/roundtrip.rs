@@ -354,6 +354,24 @@ fn resume_after_cancel() {
     };
     assert!(backup(&dest, &[changed], &opts, Some(&ckpt), caller.clone(), &no_progress, &Cancel::new()).is_err());
 
+    // Matching geometry is not sufficient when the source identity or partition type changed.
+    for variant in 0..4 {
+        let mut manifest = d.clone();
+        match variant {
+            0 => manifest.layout = PartitionStyle::Mbr { signature: 0xDEAD_BEEF },
+            1 => manifest.serial = "replacement disk".into(),
+            2 => manifest.source_number += 1,
+            _ => manifest.partitions[0].mbr.as_mut().unwrap().partition_type = 0x0B,
+        }
+        let changed = SourceDisk {
+            device: disk.clone(),
+            manifest,
+            partitions: vec![source_partition(&disk, &d, 1, None)],
+            forensic_gaps: false,
+        };
+        assert!(backup(&dest, &[changed], &opts, Some(&ckpt), caller.clone(), &no_progress, &Cancel::new()).is_err());
+    }
+
     let (p1, second) = wrap(source_partition(&disk, &d, 1, None), u64::MAX, &Cancel::new());
     let src = SourceDisk { device: disk.clone(), manifest: d.clone(), partitions: vec![p1], forensic_gaps: false };
     backup(&dest, &[src], &opts, Some(&ckpt), caller, &no_progress, &Cancel::new()).unwrap();

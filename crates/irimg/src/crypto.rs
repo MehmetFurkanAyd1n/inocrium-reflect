@@ -21,6 +21,11 @@ pub const WRAPPED_KEY_LEN: usize = KEY_LEN + TAG_LEN;
 pub const DOMAIN_DATA: u32 = 0;
 pub const DOMAIN_METADATA: u32 = 1;
 
+/// Upper bounds accepted for [`KdfParams`] (4 GiB of memory).
+const MAX_KDF_MEMORY_KIB: u32 = 4 * 1024 * 1024;
+const MAX_KDF_ITERATIONS: u32 = 64;
+const MAX_KDF_PARALLELISM: u32 = 64;
+
 /// Argon2id parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KdfParams {
@@ -45,6 +50,14 @@ impl KdfParams {
     }
 
     pub fn derive(&self, password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN]> {
+        // The parameters come from the (untrusted) image header; refuse values that would make
+        // Argon2 allocate gigabytes or spin for hours before the password can even be checked.
+        if self.memory_kib > MAX_KDF_MEMORY_KIB
+            || self.iterations > MAX_KDF_ITERATIONS
+            || self.parallelism > MAX_KDF_PARALLELISM
+        {
+            return Err(Error::InvalidArgument("KDF parameters out of range".into()));
+        }
         let params = Params::new(self.memory_kib, self.iterations, self.parallelism, Some(KEY_LEN))
             .map_err(|e| Error::InvalidArgument(format!("KDF parameters: {e}")))?;
         let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
@@ -142,5 +155,18 @@ mod tests {
         assert_eq!(unwrap_key(&kek, &nonce, &wrapped, b"aad").unwrap(), dek);
         let bad = kdf.derive("Secret", &salt).unwrap();
         assert!(matches!(unwrap_key(&bad, &nonce, &wrapped, b"aad"), Err(Error::WrongPassword)));
+    }
+
+    #[test]
+    fn hostile_kdf_params_rejected() {
+        let salt = [0u8; SALT_LEN];
+        for kdf in [
+            KdfParams { memory_kib: u32::MAX, ..KdfParams::insecure_fast() },
+            KdfParams { iterations: u32::MAX, ..KdfParams::insecure_fast() },
+            KdfParams { parallelism: u32::MAX, ..KdfParams::insecure_fast() },
+            KdfParams { memory_kib: 0, iterations: 0, parallelism: 0 },
+        ] {
+            assert!(matches!(kdf.derive("pw", &salt), Err(Error::InvalidArgument(_))), "{kdf:?}");
+        }
     }
 }

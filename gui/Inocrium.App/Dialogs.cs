@@ -1,9 +1,10 @@
 using Inocrium.App.Models;
 using Inocrium.App.ViewModels;
+using Inocrium.App.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using System.Text.Json;
-using System.Text.Json.Nodes;
+using StreamJsonRpc;
 
 namespace Inocrium.App;
 public sealed partial class MainWindow
@@ -18,9 +19,9 @@ public sealed partial class MainWindow
     private async Task CredentialAsync(string target = "")
     {
         var share = Input("Target (\\\\server\\share)", target); var user = Input("User (DOMAIN\\user)"); var password = new PasswordBox { Header = "Password" };
-        if (await Dialog("Network credential", Stack(share, user, password), "Save credential").ShowAsync() != ContentDialogResult.Primary) return;
         try
         {
+            if (await Dialog("Network credential", Stack(share, user, password), "Save credential").ShowAsync() != ContentDialogResult.Primary) return;
             if (!share.Text.StartsWith(@"\\") || string.IsNullOrWhiteSpace(user.Text)) throw new InvalidOperationException("Enter a UNC share and username.");
             await vm.Rpc.CallAsync("credentials.set", new { target = share.Text, user = user.Text, password = password.Password }); await RefreshAsync();
         }
@@ -79,23 +80,35 @@ public sealed partial class MainWindow
             }
             editor.Password = password.Password.Length == 0 ? null : password.Password;
             if (imageDisk is null) { await editor.SaveCommand.ExecuteAsync(null); if (editor.Error.Length > 0) throw new InvalidOperationException(editor.Error); }
-            else { var parameters = JsonSerializer.SerializeToNode(definition, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase })!.AsObject(); parameters["password"] = editor.Password; await vm.Rpc.CallAsync<Guid>("backup.start", parameters); }
+            else
+            {
+                var parameters = RpcService.BackupParameters(definition, editor.Password);
+                editor.Password = null; password.Password = "";
+                try { await vm.Rpc.CallAsync<Guid>("backup.start", parameters); }
+                finally { parameters.Remove("password"); }
+            }
             await RefreshAsync();
         }
         finally { editor.Password = null; password.Password = ""; }
     }
-    private async Task<string?> ImagePasswordAsync(ImageSummary image)
+    private async Task<string?> RequestPasswordAsync(bool incorrect)
     {
-        if (!image.Encrypted) return null;
-        var password = new PasswordBox { Header = "Image password", MinWidth = 350 };
-        if (await Dialog("Unlock encrypted image", password, "Continue").ShowAsync() != ContentDialogResult.Primary) { password.Password = ""; throw new OperationCanceledException("Image action cancelled."); }
-        var result = password.Password; password.Password = ""; return result;
+        await passwordDialogGate.WaitAsync();
+        var password = new PasswordBox { Header = incorrect ? "Incorrect password. Enter the password again." : "Password required by the service", MinWidth = 350 };
+        try
+        {
+            if (await Dialog("Password required", password, "Continue").ShowAsync() != ContentDialogResult.Primary) return null;
+            return password.Password;
+        }
+        finally { password.Password = ""; passwordDialogGate.Release(); }
     }
     private async Task ImageActionAsync(ImageSummary image, string action)
     {
         if (action == "delete") { if (await ConfirmAsync("Delete image permanently?", $"This deletes the image files at {image.Path}.", "Delete image")) { await vm.Rpc.CallAsync("images.delete", new { path = image.Path }); await RefreshAsync(); } return; }
         if (image.Incomplete && action is "restore" or "viboot") throw new InvalidOperationException("An incomplete image cannot be restored or booted.");
-        var password = await ImagePasswordAsync(image);
+        // The service may already have a definition password. Prompt only when it
+        // returns PASSWORD_REQUIRED/BAD_PASSWORD, rather than trusting list metadata.
+        string? password = null;
         try
         {
             if (action == "verify") { await vm.Rpc.CallAsync<Guid>("images.verify", new { path = image.Path, password }); await RefreshAsync(); return; }
@@ -132,7 +145,13 @@ public sealed partial class MainWindow
                     if (confirmation.Text != $"RESTORE {target.Number}") throw new InvalidOperationException("Restore confirmation did not match.");
                     await vm.Rpc.CallAsync<Guid>("restore.start", new { path = image.Path, password, disk = selectedDisk.Index, partition = sourcePartition, targetDisk = target.Number, targetPartition = targetNumber, targetOffset = string.IsNullOrWhiteSpace(offset.Text) ? (ulong?)null : ulong.Parse(offset.Text), extend = extend.IsChecked == true }); break;
                 case "export": var output = await SaveVhdxAsync(); if (output is null) return; await vm.Rpc.CallAsync<Guid>("vhdx.export", new { path = image.Path, password, disk = selectedDisk.Index, output }); break;
-                case "viboot": await vm.Rpc.CallAsync<Guid>("viboot.start", new { path = image.Path, password, disk = selectedDisk.Index, vmName = string.IsNullOrWhiteSpace(vmName.Text) ? null : vmName.Text, memoryMb = checked((uint)memory.Value), cpus = checked((uint)cpus.Value) }); break;
+                case "viboot":
+                    try { await vm.Rpc.CallAsync<Guid>("viboot.start", new { path = image.Path, password, disk = selectedDisk.Index, vmName = string.IsNullOrWhiteSpace(vmName.Text) ? null : vmName.Text, memoryMb = checked((uint)memory.Value), cpus = checked((uint)cpus.Value) }); }
+                    catch (RemoteInvocationException error) when (error.ErrorCode == RpcErrorCodes.MethodNotFound)
+                    {
+                        throw new InvalidOperationException("viBoot requires Hyper-V, which is unavailable on this machine. Enable Hyper-V on a supported Windows edition and restart Windows before trying again.");
+                    }
+                    break;
             }
             await RefreshAsync();
         }

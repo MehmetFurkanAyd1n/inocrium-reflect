@@ -33,7 +33,9 @@ fn fires_on(s: &Schedule, date: NaiveDate) -> bool {
 
 fn at<Tz: TimeZone>(tz: &Tz, date: NaiveDate, time: NaiveTime) -> Option<DateTime<Tz>> {
     let local = date.and_time(time);
-    tz.from_local_datetime(&local).earliest().or_else(|| tz.from_local_datetime(&(local + Duration::hours(1))).earliest())
+    tz.from_local_datetime(&local)
+        .earliest()
+        .or_else(|| tz.from_local_datetime(&(local + Duration::hours(1))).earliest())
 }
 
 /// The first occurrence strictly after `after`.
@@ -61,6 +63,7 @@ pub fn previous_run<Tz: TimeZone>(s: &Schedule, now: &DateTime<Tz>) -> Option<Da
 }
 
 /// Whether an occurrence happened after `reference` and at or before `now`.
+#[cfg(test)]
 pub fn is_due<Tz: TimeZone>(s: &Schedule, reference: &DateTime<Tz>, now: &DateTime<Tz>) -> bool {
     previous_run(s, now).is_some_and(|p| p > *reference)
 }

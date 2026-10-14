@@ -247,3 +247,117 @@ fn checkpoint_resume() {
         assert_eq!(nonces.len(), 10);
     }
 }
+
+#[test]
+fn writer_options_debug_redacts_password() {
+    let dbg = format!("{:?}", opts(Some("hunter2-secret"), None));
+    assert!(!dbg.contains("hunter2-secret"), "{dbg}");
+    assert!(dbg.contains("redacted"), "{dbg}");
+}
+
+#[test]
+fn stream_read_past_short_final_block_is_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("short.irimg");
+    // Block 9 is only 1000 bytes long.
+    write_image(&path, opts(None, None), &[(1, 9)]);
+    let r = ImageReader::open(&path, None).unwrap();
+    let mut buf = vec![0xFFu8; 100];
+    r.read_stream_at(0, 1, 9 * BS as u64 + 2000, &mut buf).unwrap();
+    assert!(buf.iter().all(|&b| b == 0));
+    // Straddling the end of the short block.
+    let mut buf = vec![0xFFu8; 100];
+    r.read_stream_at(0, 1, 9 * BS as u64 + 950, &mut buf).unwrap();
+    assert_eq!(&buf[..50], &block_data(1, 9, 1000)[950..]);
+    assert!(buf[50..].iter().all(|&b| b == 0));
+    assert!(r.read_stream_at(0, 1, u64::MAX - 10, &mut [0u8; 100]).is_err());
+}
+
+fn rewrite_footer(path: &std::path::Path, edit: impl FnOnce(&mut Footer)) {
+    let mut data = std::fs::read(path).unwrap();
+    let at = data.len() - FOOTER_SIZE;
+    let mut f = Footer::decode(&data[at..]).unwrap();
+    edit(&mut f);
+    data[at..].copy_from_slice(&f.encode());
+    std::fs::write(path, data).unwrap();
+}
+
+#[test]
+fn hostile_footer_lengths_rejected() {
+    for pw in [None, Some("pw")] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.irimg");
+        write_image(&path, opts(pw, None), &[(1, 0)]);
+        let pristine = std::fs::read(&path).unwrap();
+
+        rewrite_footer(&path, |f| f.metadata_len = u64::MAX);
+        assert!(matches!(ImageReader::open(&path, pw), Err(Error::CorruptFooter)));
+        std::fs::write(&path, &pristine).unwrap();
+
+        rewrite_footer(&path, |f| f.metadata_offset = u64::MAX - 1);
+        assert!(matches!(ImageReader::open(&path, pw), Err(Error::CorruptFooter)));
+        std::fs::write(&path, &pristine).unwrap();
+
+        rewrite_footer(&path, |f| f.metadata_offset = 0);
+        assert!(matches!(ImageReader::open(&path, pw), Err(Error::CorruptFooter)));
+        std::fs::write(&path, &pristine).unwrap();
+
+        // The plain length is not covered by the stored-bytes hash; it must not drive an
+        // unchecked allocation.
+        rewrite_footer(&path, |f| f.metadata_plain_len = 1 << 62);
+        assert!(ImageReader::open(&path, pw).is_err());
+        std::fs::write(&path, &pristine).unwrap();
+        assert!(ImageReader::open(&path, pw).is_ok());
+    }
+}
+
+fn interrupted_image(path: &std::path::Path, pw: Option<&str>) -> Checkpoint {
+    let mut w = ImageWriter::create(path, opts(pw, None)).unwrap();
+    let enc = w.encoder();
+    for b in 0..3 {
+        w.append(enc.encode(BlockRef { disk: 0, stream: 1, block: b }, &block_data(1, b, BS as usize))).unwrap();
+    }
+    let ckpt = w.checkpoint(serde_json::json!({})).unwrap();
+    drop(w);
+    ckpt
+}
+
+#[test]
+fn repeated_resume_uses_fresh_nonces() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rr.irimg");
+    let ckpt = interrupted_image(&path, Some("pw"));
+    let mut starts = Vec::new();
+    for _ in 0..2 {
+        // Each attempt crashes after writing one block; the next resumes from the same checkpoint.
+        let mut w = ImageWriter::resume(&path, &ckpt, Some("pw")).unwrap();
+        let enc = w.encoder();
+        w.append(enc.encode(BlockRef { disk: 0, stream: 1, block: 3 }, &block_data(1, 3, BS as usize))).unwrap();
+        let c = w.checkpoint(serde_json::json!({})).unwrap();
+        assert!(c.nonce_counter > ckpt.nonce_counter);
+        starts.push(c.nonce_counter);
+        drop(w);
+    }
+    assert_ne!(starts[0], starts[1], "two resumes from one checkpoint reused a nonce");
+}
+
+#[test]
+fn hostile_checkpoint_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hc.irimg");
+    let ckpt = interrupted_image(&path, None);
+    let len = std::fs::metadata(&path).unwrap().len();
+
+    let bad = Checkpoint { file_offset: 10, ..ckpt.clone() };
+    assert!(ImageWriter::resume(&path, &bad, None).is_err());
+    let bad = Checkpoint { file_offset: len + (1 << 20), ..ckpt.clone() };
+    assert!(ImageWriter::resume(&path, &bad, None).is_err());
+    let bad = Checkpoint { block_size: BS * 2, ..ckpt.clone() };
+    assert!(ImageWriter::resume(&path, &bad, None).is_err());
+    let bad = Checkpoint { nonce_counter: u64::MAX - 5, ..ckpt.clone() };
+    assert!(ImageWriter::resume(&path, &bad, None).is_err());
+    // Rejected checkpoints leave the file alone.
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), len);
+    assert_eq!(&std::fs::read(&path).unwrap()[..8], b"INOCRIUM");
+    assert!(ImageWriter::resume(&path, &ckpt, None).is_ok());
+}

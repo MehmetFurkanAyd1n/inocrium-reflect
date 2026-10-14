@@ -25,7 +25,9 @@ the normal build output; the Windows App SDK runtime is self-contained.
 The GUI uses one StreamJsonRpc connection over NamedPipeClientStream with
 HeaderDelimitedMessageHandler and SystemTextJsonFormatter (camelCase). It checks
 protocol version 1, reconnects every two seconds when disconnected, and refreshes
-lists after reconnect. It never automatically retries a mutation. An InfoBar
+lists after reconnect. It never replays a request after a timeout/disconnect.
+Mount, unmount and viBoot requests allow 180 seconds; other requests allow 30.
+An InfoBar
 shows unavailable service/access errors. Long operations appear in Activity,
 with notifications updating progress/rate/ETA and state. Window close cancels
 connection retries and disposes the RPC transport.
@@ -36,8 +38,24 @@ Schedule, Existing images (inspect, mount, verify, restore, VHDX export and viBo
 Mounts, Activity/History with log viewer, and Settings/network credentials/About.
 Restore requires a selected target and typed `RESTORE <disk number>` confirmation.
 The service must still independently enforce destructive-operation safety.
-Encrypted image actions ask for the password without persisting it in the GUI.
+PASSWORD_REQUIRED (-32004) and BAD_PASSWORD (-32005) prompt for a password and
+retry only the rejected request. Cancel stops the action. Passwords are not
+persisted or logged by the GUI. The service can retain saved-definition and
+network-credential secrets in its protected store. `definitions.run` accepts
+only an ID, so a password error falls back to `definitions.get` and the flattened
+`backup.start` request with a transient password.
 Folder and save pickers are initialized with the WinUI window handle.
+
+Rust error codes are preserved as `RemoteInvocationException.ErrorCode`, including
+BUSY (-32003), which overlaps a StreamJsonRpc extension code. viBoot reports a
+friendly Hyper-V requirement when the service returns MethodNotFound (-32601).
+
+`ProtocolChecks` is included in the solution and runs in CI without elevation or
+an installed service. It links the actual client/DTO sources and uses a unique
+local fixture pipe. Run `dotnet run --project gui/ProtocolChecks -c Release` to
+check all eleven error codes, password retries/cancellation, UTF-8, nullable DTOs,
+backup/unmount parameters and a mount taking more than 30 seconds. The Rust IPC
+cross-language fixture additionally covers notifications and service restart.
 
 Architecture: `Models/Protocol.cs` mirrors the Rust DTOs; `Services/RpcService.cs`
 owns reconnect/RPC/notification handling; CommunityToolkit viewmodels hold state
@@ -47,3 +65,10 @@ viewmodel. See [the IPC contract](../crates/ipc/PROTOCOL.md) for all methods,
 field shapes, errors and security requirements.
 
 Licensed GPL-3.0-only. Full license is in the repository root LICENSE.
+
+The MSI installs the full `dotnet publish --self-contained true` output, including
+`Inocrium.App.pri`, compiled XAML resources and both .NET/Windows App SDK runtimes.
+Some XBF resources are embedded in PRI files; harvesting only EXE/DLL files is
+insufficient. `installer/build.ps1` validates the payload before WiX harvesting.
+The CLI is always installed; opt in to system PATH with
+`msiexec /i inocrium-reflect-0.1.0-x64.msi ADDLOCAL=ALL`.

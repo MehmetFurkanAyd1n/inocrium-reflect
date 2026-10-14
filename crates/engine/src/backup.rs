@@ -194,7 +194,17 @@ fn same_plan(a: &DiskManifest, b: &DiskManifest) -> bool {
     };
     let gaps =
         |d: &DiskManifest| -> Vec<(u32, u64, u64)> { d.gaps.iter().map(|g| (g.stream, g.offset, g.length)).collect() };
-    a.size == b.size && a.sector_size == b.sector_size && parts(a) == parts(b) && gaps(a) == gaps(b)
+    a.size == b.size
+        && a.sector_size == b.sector_size
+        && a.source_number == b.source_number
+        && a.serial == b.serial
+        && a.layout == b.layout
+        && parts(a) == parts(b)
+        && a.partitions
+            .iter()
+            .zip(&b.partitions)
+            .all(|(a, b)| a.stream == b.stream && a.gpt == b.gpt && a.mbr == b.mbr && a.filesystem == b.filesystem)
+        && gaps(a) == gaps(b)
 }
 
 /// Images `disks` into `dest` (`name.irimg`). With `resume`, continues the interrupted backup

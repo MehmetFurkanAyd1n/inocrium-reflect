@@ -33,6 +33,10 @@
         </Component>
         <Component Id="CliComponent" Guid="*">
           <File Id="CliExe" Source="$(var.RustOutDir)\inocrium.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="CliPathComponent" Guid="*">
+          <RegistryValue Root="HKLM" Key="Software\inocrium reflect" Name="CliPath"
+                         Type="integer" Value="1" KeyPath="yes" />
           <Environment Id="CliPath" Name="PATH" Value="[INSTALLFOLDER]"
                        Action="set" Part="last" System="yes" Permanent="no" />
         </Component>
@@ -59,6 +63,10 @@
       <ComponentRef Id="CliComponent" />
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentGroupRef Id="GuiPayload" />
+    </Feature>
+    <!-- Opt in from the command line with ADDLOCAL=ALL, or name both features. -->
+    <Feature Id="CliPathFeature" Title="Add CLI to system PATH" Level="2">
+      <ComponentRef Id="CliPathComponent" />
     </Feature>
   </Package>
 

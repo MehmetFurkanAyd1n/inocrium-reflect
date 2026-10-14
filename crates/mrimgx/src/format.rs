@@ -132,6 +132,8 @@ pub(crate) struct PartitionIndex {
     pub reserved: Vec<IndexElem>,
     /// `DataBlockIndex` (empty for delta files).
     pub blocks: Vec<IndexElem>,
+    /// Delta growth beyond the full index, kept sparse to avoid allocating holes.
+    pub sparse: std::collections::BTreeMap<usize, IndexElem>,
     /// `DeltaDataBlockIndex` as `(block_index, element)`.
     pub deltas: Vec<(u32, IndexElem)>,
 }
@@ -378,6 +380,12 @@ impl PartitionJson {
             return Err(Error::BadFormat(format!("invalid partition block size {block_size}")));
         }
         let fs_start = num_or(&fs["start"], 0);
+        let start = num_or(&g["start"], 0);
+        let end = num_or(&g["end"], 0);
+        let length = num_or(&g["length"], 0);
+        if length == 0 && end >= start && end > 0 && (end - start).checked_add(1).is_none() {
+            return Err(Error::BadFormat("partition length exceeds 2^64".into()));
+        }
         let lcn0_offset = num(&fs["lcn0_offset"]).unwrap_or(fs_start);
         if lcn0_offset < fs_start {
             return Err(Error::BadFormat("lcn0_offset precedes the file system start".into()));
@@ -393,9 +401,9 @@ impl PartitionJson {
             number: small(&h["partition_number"], "partition_number").unwrap_or(0),
             block_size,
             block_count: num_or(&h["block_count"], 0),
-            start: num_or(&g["start"], 0),
-            end: num_or(&g["end"], 0),
-            length: num_or(&g["length"], 0),
+            start,
+            end,
+            length,
             boot_sector_offset: num_or(&g["boot_sector_offset"], 0),
             mbr_type: num(&p["_partition_table_entry"]["type"]).and_then(|n| u8::try_from(n).ok()),
             fs_type: text(&fs["type"]),

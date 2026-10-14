@@ -2,6 +2,16 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Inocrium.App.Models;
+public static class RpcErrorCodes
+{
+    public const int Cancelled = -32001;
+    public const int NotFound = -32002;
+    public const int Busy = -32003;
+    public const int PasswordRequired = -32004;
+    public const int BadPassword = -32005;
+    public const int AccessDenied = -32006;
+    public const int MethodNotFound = -32601;
+}
 public sealed record ServiceInfo(string Version, uint ProtocolVersion, string Machine);
 public sealed record Partition(uint Number, ulong Offset, ulong Length, string TypeName, string? FileSystem, string? Label, string? Letter, ulong? UsedBytes, bool IsSystem, bool IsBoot, bool IsEsp);
 public sealed record Disk(uint Number, string Model, string Serial, ulong Size, uint SectorSize, string Style, string DiskId, bool IsSystem, List<Partition> Partitions)

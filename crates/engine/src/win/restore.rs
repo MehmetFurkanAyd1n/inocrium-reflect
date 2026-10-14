@@ -122,6 +122,9 @@ pub(super) struct Retable {
 pub(super) fn retable(head: &[u8], ss: u32, image_size: u64, size: u64, rewrite: bool, extend: bool) -> Retable {
     let s = ss as u64;
     let mut out = Retable { writes: Vec::new(), extended: None };
+    if !(512..=65536).contains(&ss) || !ss.is_power_of_two() {
+        return out;
+    }
     let extend = extend && size > image_size;
 
     if let Some((h, mut entries)) = gpt::parse_primary(head, ss) {
@@ -134,11 +137,11 @@ pub(super) fn retable(head: &[u8], ss: u32, image_size: u64, size: u64, rewrite:
         }
         let mut g = Gpt { disk_id, sector_size: ss, entry_count: h.entry_count, entries };
         if extend {
-            let last_usable = size / s - 2 - g.entry_array_sectors();
+            let Some(last_usable) = (size / s).checked_sub(2 + g.entry_array_sectors()) else { return out };
             // Exclusive end LBA, 1 MiB aligned.
             let end = (last_usable + 1) * s / MIB * MIB / s;
             if let Some(e) = g.entries.iter_mut().max_by_key(|e| e.last_lba) {
-                if end > e.last_lba + 1 {
+                if end > e.last_lba.saturating_add(1) && e.first_lba < end {
                     e.last_lba = end - 1;
                     out.extended = Some((e.first_lba * s, (end - e.first_lba) * s));
                 }
@@ -149,7 +152,17 @@ pub(super) fn retable(head: &[u8], ss: u32, image_size: u64, size: u64, rewrite:
         }
         // The original protective (or hybrid) MBR only describes a disk of the original size.
         let pmbr = (size == image_size && head.len() >= 512).then(|| &head[..512]);
-        let sectors = g.build(size, Some(h.first_usable_lba), pmbr);
+        let mut sectors = g.build(size, None, pmbr);
+        // Preserve the header boundary without allocating the unused space before it.
+        let first = h.first_usable_lba.max(sectors.first_usable_lba);
+        for header in [
+            &mut sectors.primary[s as usize..2 * s as usize],
+            &mut sectors.backup[(g.entry_array_sectors() * s) as usize..],
+        ] {
+            let mut h = gpt::GptHeader::decode(header).expect("newly built GPT header");
+            h.first_usable_lba = first;
+            header.copy_from_slice(&h.encode(ss));
+        }
         let keep = (((2 + g.entry_array_sectors()) * s) as usize).min(sectors.primary.len());
         out.writes.push((0, sectors.primary[..keep].to_vec()));
         out.writes.push((sectors.backup_offset, sectors.backup));
@@ -781,6 +794,36 @@ mod tests {
         let e = mbr::entries(&t.writes[0].1)[0].unwrap();
         assert_eq!(e.sectors as u64 * 512, 7 * MIB);
         assert_eq!(mbr::signature(&t.writes[0].1), 0x1234);
+    }
+
+    #[test]
+    fn retable_rejects_invalid_sector_sizes() {
+        let head = mbr::build(1, &[], None);
+        for ss in [0, 1, 511, 513, u32::MAX] {
+            let t = retable(&head, ss, MIB, 2 * MIB, true, true);
+            assert!(t.writes.is_empty());
+            assert!(t.extended.is_none());
+        }
+    }
+
+    #[test]
+    fn retable_hostile_gpt_range_does_not_overflow() {
+        let g = Gpt {
+            disk_id: Uuid::nil(),
+            sector_size: 512,
+            entry_count: DEFAULT_ENTRY_COUNT,
+            entries: vec![GptEntry {
+                type_id: gpt::BASIC_DATA,
+                id: Uuid::nil(),
+                first_lba: 2048,
+                last_lba: u64::MAX,
+                attributes: 0,
+                name: String::new(),
+            }],
+        };
+        let head = g.build(4 * MIB, Some(2048), None).primary;
+        let t = retable(&head, 512, 4 * MIB, 8 * MIB, true, true);
+        assert!(t.extended.is_none());
     }
 
     #[test]

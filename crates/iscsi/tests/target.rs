@@ -716,7 +716,15 @@ fn windows_initiator_end_to_end() {
     use iscsi::initiator;
     // The target must remain alive until logout and portal removal complete.
     let secret = generate_chap_secret();
-    let s = server(Arc::new(MemDevice::new(64 * 1024 * 1024, 512)), Some(secret.clone()));
+    // A unique name, so a session left by an interrupted run cannot block the login.
+    let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let s = TargetServer::start(TargetConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        iqn: iqn_for(&format!("test-{unique}")),
+        chap: Some(secret.clone()),
+        luns: vec![lun(Arc::new(MemDevice::new(64 * 1024 * 1024, 512)))],
+    })
+    .unwrap();
     let addr = s.local_addr();
     initiator::ensure_initiator_service().unwrap();
     initiator::add_portal(addr, Some(&secret)).unwrap();
@@ -733,4 +741,11 @@ fn windows_initiator_end_to_end() {
     assert!(!result.unwrap().is_empty());
     logout.unwrap();
     remove.unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "Requires an elevated shell; logs out every session and portal left by inocrium targets on this machine"]
+fn windows_cleanup_stale_sessions() {
+    iscsi::initiator::cleanup_stale("iqn.2026-01.org.inocrium:image-").unwrap();
 }

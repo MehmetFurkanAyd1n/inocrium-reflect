@@ -43,6 +43,9 @@ impl GptEntry {
 
     /// Returns `None` for unused entries.
     pub fn decode(b: &[u8]) -> Option<Self> {
+        if b.len() < GPT_ENTRY_SIZE as usize {
+            return None;
+        }
         let type_id = Uuid::from_bytes_le(b[0..16].try_into().ok()?);
         if type_id.is_nil() {
             return None;
@@ -126,7 +129,7 @@ impl GptHeader {
 
 /// Encodes a partition entry array of `count` slots.
 pub fn encode_entries(entries: &[GptEntry], count: u32) -> Vec<u8> {
-    let mut b = vec![0u8; (count * GPT_ENTRY_SIZE) as usize];
+    let mut b = vec![0u8; count as usize * GPT_ENTRY_SIZE as usize];
     for (i, e) in entries.iter().take(count as usize).enumerate() {
         b[i * GPT_ENTRY_SIZE as usize..(i + 1) * GPT_ENTRY_SIZE as usize].copy_from_slice(&e.encode());
     }
@@ -165,7 +168,7 @@ pub struct GptSectors {
 
 impl Gpt {
     pub fn entry_array_sectors(&self) -> u64 {
-        ((self.entry_count * GPT_ENTRY_SIZE) as u64).div_ceil(self.sector_size as u64)
+        (u64::from(self.entry_count) * u64::from(GPT_ENTRY_SIZE)).div_ceil(self.sector_size as u64)
     }
 
     /// Lays the table out for a disk of `disk_size` bytes. `first_usable_lba` may be raised to
@@ -175,12 +178,12 @@ impl Gpt {
         let total = disk_size / ss;
         let array = self.entry_array_sectors();
         let first_usable = first_usable_lba.unwrap_or(0).max(2 + array);
-        let last_usable = total - 2 - array;
+        let last_usable = total.saturating_sub(2 + array);
         let entries = encode_entries(&self.entries, self.entry_count);
         let entries_crc = crc32fast::hash(&entries);
         let mut primary_header = GptHeader {
             my_lba: 1,
-            alternate_lba: total - 1,
+            alternate_lba: total.saturating_sub(1),
             first_usable_lba: first_usable,
             last_usable_lba: last_usable,
             disk_id: self.disk_id,
@@ -197,15 +200,15 @@ impl Gpt {
         primary[ss as usize..2 * ss as usize].copy_from_slice(&primary_header.encode(self.sector_size));
         primary[2 * ss as usize..2 * ss as usize + entries.len()].copy_from_slice(&entries);
 
-        primary_header.my_lba = total - 1;
+        primary_header.my_lba = total.saturating_sub(1);
         primary_header.alternate_lba = 1;
-        primary_header.entries_lba = total - 1 - array;
+        primary_header.entries_lba = total.saturating_sub(1 + array);
         let mut backup = vec![0u8; ((array + 1) * ss) as usize];
         backup[..entries.len()].copy_from_slice(&entries);
         backup[(array * ss) as usize..].copy_from_slice(&primary_header.encode(self.sector_size));
         GptSectors {
             primary,
-            backup_offset: (total - 1 - array) * ss,
+            backup_offset: total.saturating_sub(1 + array) * ss,
             backup,
             first_usable_lba: first_usable,
             last_usable_lba: last_usable,
@@ -218,9 +221,12 @@ impl Gpt {
 pub fn parse_primary(head: &[u8], sector_size: u32) -> Option<(GptHeader, Vec<GptEntry>)> {
     let ss = sector_size as usize;
     let header = GptHeader::decode(head.get(ss..2 * ss)?)?;
-    let start = header.entries_lba as usize * ss;
-    let len = (header.entry_count * header.entry_size) as usize;
-    let array = head.get(start..start + len)?;
+    if header.entry_size < GPT_ENTRY_SIZE {
+        return None;
+    }
+    let start = usize::try_from(header.entries_lba).ok()?.checked_mul(ss)?;
+    let len = usize::try_from(u64::from(header.entry_count) * u64::from(header.entry_size)).ok()?;
+    let array = head.get(start..start.checked_add(len)?)?;
     if crc32fast::hash(array) != header.entries_crc {
         return None;
     }
@@ -277,5 +283,44 @@ mod tests {
         assert_eq!(GptHeader::decode(&b), Some(h));
         b[60] ^= 1;
         assert_eq!(GptHeader::decode(&b), None);
+    }
+
+    #[test]
+    fn hostile_counts_and_offsets_do_not_panic() {
+        for len in 0..GPT_ENTRY_SIZE as usize {
+            assert!(GptEntry::decode(&vec![1; len]).is_none());
+        }
+        // Array sizing must use u64 even when the byte count exceeds u32.
+        let large = Gpt { disk_id: Uuid::nil(), sector_size: 512, entry_count: u32::MAX, entries: vec![] };
+        assert_eq!(large.entry_array_sectors(), (u64::from(u32::MAX) * 128).div_ceil(512));
+        // Valid tables and preserved usable boundaries must not be silently lowered.
+        let large = Gpt { entry_count: 16385, ..large };
+        let table = large.build(64 << 20, Some(65536), None);
+        let (h, _) = parse_primary(&table.primary, 512).unwrap();
+        assert_eq!(h.entry_count, 16385);
+        assert_eq!(h.first_usable_lba, 65536);
+        // A disk too small for the table.
+        let gpt = Gpt { disk_id: Uuid::new_v4(), sector_size: 512, entry_count: 128, entries: vec![] };
+        gpt.build(0, None, None);
+
+        // A valid header CRC over an array size that overflows u32 arithmetic.
+        let mut head = vec![0u8; 4096];
+        for (entries_lba, entry_count, entry_size) in
+            [(2, 0x0200_0000, 128), (1 << 56, 128, 128), (2, u32::MAX, u32::MAX), (2, u32::MAX, 0)]
+        {
+            let h = GptHeader {
+                my_lba: 1,
+                alternate_lba: 7,
+                first_usable_lba: 6,
+                last_usable_lba: 6,
+                disk_id: Uuid::new_v4(),
+                entries_lba,
+                entry_count,
+                entry_size,
+                entries_crc: 0,
+            };
+            head[512..1024].copy_from_slice(&h.encode(512));
+            assert!(parse_primary(&head, 512).is_none());
+        }
     }
 }

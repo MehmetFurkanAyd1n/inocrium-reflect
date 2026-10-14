@@ -27,13 +27,34 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Build workspace
+        run: cargo build --workspace
       - name: Test workspace
         # Tests requiring administrator privileges are #[ignore].
         run: cargo test --workspace
+      - name: Build cross-language protocol fixture
+        run: dotnet build crates/ipc/tests/dotnet/ProtocolSmoke.csproj -c Release
+      - name: Test GUI pipe framing, notifications and reconnect
+        run: cargo test -p ipc --test dotnet -- --ignored --nocapture
+      - name: Test GUI error codes, password retries and long mount timeout
+        run: dotnet run --project gui/ProtocolChecks/ProtocolChecks.csproj -c Release
+      - name: Validate test script syntax (Windows PowerShell)
+        shell: powershell
+        run: ./tests/Validate-Syntax.ps1
+      - name: Validate test script syntax (PowerShell 7)
+        shell: pwsh
+        run: ./tests/Validate-Syntax.ps1
+      - name: Test non-admin script helpers
+        # The fake CLI console executable is compiled with .NET Framework Add-Type.
+        shell: powershell
+        run: ./tests/Validate-Helpers.ps1
 
   gui:
     runs-on: windows-latest
@@ -44,16 +65,11 @@ jobs:
           dotnet-version: '8.0.x'
       - uses: microsoft/setup-msbuild@v2
       - name: Build WinUI GUI
-        # VS MSBuild supplies Microsoft.Build.Packaging.Pri.Tasks.dll and XAML
-        # build tasks that can be missing when using only the bare .NET SDK.
-        run: msbuild gui/Inocrium.sln /restore /m /p:Configuration=Release /p:Platform=x64
+        # The project pins portable MSIX PRI/XAML tooling for SDK-only builds.
+        run: dotnet build gui/Inocrium.sln -c Release -p:Platform=x64
 
   installer:
     needs: [rust, gui]
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' &&
-       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

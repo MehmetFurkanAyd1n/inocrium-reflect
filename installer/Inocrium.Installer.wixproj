@@ -1,6 +1,11 @@
 <Project Sdk="WixToolset.Sdk/5.0.2">
   <PropertyGroup>
     <OutputType>Package</OutputType>
+    <!-- Windows App SDK 1.6 ships multi-language XAML DLLs whose language lists
+         exceed ICE03's old column limit, plus MUI LCIDs (1152/1153/1169) absent
+         from its language catalog. Preserve the vendor binaries and metadata.
+         All other MSI validation remains enabled. -->
+    <SuppressIces>$(SuppressIces);ICE03</SuppressIces>
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
     <InstallerPlatform Condition="'$(Platform)' == 'x64'">x64</InstallerPlatform>
     <InstallerPlatform Condition="'$(Platform)' == 'ARM64'">arm64</InstallerPlatform>
@@ -20,5 +25,8 @@
     <Error Condition="!Exists('$(RustOutDir)\inocrium-service.exe')" Text="Missing inocrium-service.exe in RustOutDir: $(RustOutDir)." />
     <Error Condition="!Exists('$(RustOutDir)\inocrium.exe')" Text="Missing inocrium.exe in RustOutDir: $(RustOutDir)." />
     <Error Condition="!Exists('$(GuiPublishDir)\Inocrium.App.exe')" Text="Missing Inocrium.App.exe in GuiPublishDir: $(GuiPublishDir)." />
+    <Error Condition="!Exists('$(GuiPublishDir)\Inocrium.App.pri')" Text="Missing WinUI Inocrium.App.pri. Publish the full unpackaged GUI payload, not just its executable." />
+    <Error Condition="!Exists('$(GuiPublishDir)\coreclr.dll')" Text="Missing self-contained .NET runtime in GuiPublishDir." />
+    <Error Condition="!Exists('$(GuiPublishDir)\Microsoft.UI.Xaml.dll')" Text="Missing self-contained Windows App SDK runtime in GuiPublishDir." />
   </Target>
 </Project>

@@ -20,6 +20,9 @@ pub fn disk_table(
     disk_size: u64,
     rewrite_identity: bool,
 ) -> Vec<(u64, Vec<u8>)> {
+    if !valid_sector_size(d.sector_size) || !valid_gpt_geometry(d) {
+        return vec![];
+    }
     let captured: Vec<&PartitionManifest> = d.captured_partitions().collect();
     let track0 = track0.filter(|s| mbr::has_boot_signature(s));
     match &d.layout {
@@ -34,7 +37,7 @@ pub fn disk_table(
                         type_id: g.type_id,
                         id: fresh(g.id),
                         first_lba: p.offset / ss,
-                        last_lba: (p.offset + p.length) / ss - 1,
+                        last_lba: (p.offset.saturating_add(p.length) / ss).saturating_sub(1),
                         attributes: g.attributes,
                         name: g.name.clone(),
                     })
@@ -46,7 +49,17 @@ pub fn disk_table(
                 entry_count: (*max_partition_count).max(gpt::DEFAULT_ENTRY_COUNT).max(entries.len() as u32),
                 entries,
             };
-            let sectors = table.build(disk_size, Some(*first_usable_lba), track0);
+            // Allocate only the table, while preserving the original usable boundary in both headers.
+            let mut sectors = table.build(disk_size, None, track0);
+            let first = (*first_usable_lba).max(sectors.first_usable_lba);
+            for header in [
+                &mut sectors.primary[ss as usize..2 * ss as usize],
+                &mut sectors.backup[(table.entry_array_sectors() * ss) as usize..],
+            ] {
+                let mut h = gpt::GptHeader::decode(header).expect("newly built GPT header");
+                h.first_usable_lba = first;
+                header.copy_from_slice(&h.encode(d.sector_size));
+            }
             // Leave whatever followed the entry array in TRACK0 alone.
             let head = (2 + table.entry_array_sectors()) * ss;
             let mut primary = sectors.primary;
@@ -105,4 +118,22 @@ fn patched_mbr(
     };
     mbr::set_signature(&mut sector, if rewrite_identity { mbr::random_signature() } else { signature });
     sector
+}
+
+/// Sector sizes a partition table can be laid out with (the manifest is untrusted).
+pub(crate) fn valid_sector_size(ss: u32) -> bool {
+    (512..=65536).contains(&ss) && ss.is_power_of_two()
+}
+
+pub(crate) fn valid_gpt_geometry(d: &DiskManifest) -> bool {
+    match d.layout {
+        PartitionStyle::Gpt { max_partition_count, first_usable_lba, .. } => {
+            // Limit untrusted arrays to 64 MiB; reject unsupported geometry instead of truncating it.
+            max_partition_count <= 524288
+                && d.partitions.len() <= 524288
+                && d.sector_size != 0
+                && first_usable_lba <= d.size / u64::from(d.sector_size)
+        }
+        _ => true,
+    }
 }

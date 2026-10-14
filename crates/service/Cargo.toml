@@ -26,6 +26,7 @@ mrimgx.workspace = true
 redeploy.workspace = true
 windows-service.workspace = true
 ctrlc.workspace = true
+windows.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

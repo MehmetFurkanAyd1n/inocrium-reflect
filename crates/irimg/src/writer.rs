@@ -20,13 +20,19 @@ use crate::{Error, Result, MAX_BLOCK_SIZE, MIN_BLOCK_SIZE};
 /// Gap added to the nonce counter on resume so that nonces consumed by blocks written after
 /// the last checkpoint (and then truncated away) are never reused.
 const RESUME_NONCE_GAP: u64 = 1 << 40;
+/// Bits of randomness added on top of [`RESUME_NONCE_GAP`]. Resuming twice from the same
+/// checkpoint (the first resumed run died before writing a new one) must not start both runs
+/// at the same counter, or blocks of the two runs would be sealed under identical nonces.
+const RESUME_NONCE_RANDOM_BITS: u32 = 56;
+/// Nonce counters above this are refused so the counter can never wrap around.
+const MAX_NONCE_START: u64 = u64::MAX - (1 << 48);
 
 pub(crate) const META_MAGIC: &[u8; 8] = b"IRMETA01";
 pub(crate) const SECTION_MANIFEST: u32 = 1;
 pub(crate) const SECTION_RAW_REGIONS: u32 = 2;
 pub(crate) const SECTION_INDEX: u32 = 3;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WriterOptions {
     pub block_size: u32,
     /// zstd level; 0 disables compression.
@@ -35,6 +41,19 @@ pub struct WriterOptions {
     pub kdf: KdfParams,
     /// Maximum size of each file; `None` writes a single file.
     pub split_size: Option<u64>,
+}
+
+impl std::fmt::Debug for WriterOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print the password.
+        f.debug_struct("WriterOptions")
+            .field("block_size", &self.block_size)
+            .field("compression_level", &self.compression_level)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("kdf", &self.kdf)
+            .field("split_size", &self.split_size)
+            .finish()
+    }
 }
 
 impl Default for WriterOptions {
@@ -171,17 +190,34 @@ impl ImageWriter {
             }
             None => None,
         };
+        if checkpoint.block_size != header0.block_size {
+            return Err(Error::InvalidArgument("checkpoint block size does not match the image".into()));
+        }
+        let index = BlockIndex::decode(&checkpoint.index)?;
+        let nonce_start = resume_nonce_start(checkpoint.nonce_counter)?;
         let mut files = Vec::new();
         for n in 0..=checkpoint.file_no {
             let p = image_file_path(&base, n);
             if !p.is_file() {
                 return Err(Error::MissingFile(p.display().to_string()));
             }
+            if n > 0 {
+                File::open(&p)?.read_exact(&mut hbuf)?;
+                let h = FileHeader::decode(&hbuf)?;
+                if h.image_id != header0.image_id || h.file_no != n {
+                    return Err(Error::ForeignFile(p.display().to_string()));
+                }
+            }
             files.push(p);
         }
-        remove_parts_from(&base, checkpoint.file_no + 1);
         let current = files.last().unwrap().clone();
         let mut file = OpenOptions::new().write(true).read(true).open(&current)?;
+        // Never truncate into the header, and never extend the file with zeros the index
+        // would then point into.
+        if checkpoint.file_offset < HEADER_SIZE as u64 || checkpoint.file_offset > file.metadata()?.len() {
+            return Err(Error::InvalidArgument("checkpoint does not match the image file".into()));
+        }
+        remove_parts_from(&base, checkpoint.file_no.saturating_add(1));
         file.set_len(checkpoint.file_offset)?;
         file.seek(SeekFrom::Start(checkpoint.file_offset))?;
         let mut header = header0;
@@ -190,7 +226,7 @@ impl ImageWriter {
             image_id: header.image_id,
             level: checkpoint.compression_level,
             sealer,
-            nonce: Arc::new(AtomicU64::new(checkpoint.nonce_counter.saturating_add(RESUME_NONCE_GAP))),
+            nonce: Arc::new(AtomicU64::new(nonce_start)),
         };
         Ok(Self {
             base,
@@ -199,7 +235,7 @@ impl ImageWriter {
             file,
             file_offset: checkpoint.file_offset,
             files,
-            index: BlockIndex::decode(&checkpoint.index)?,
+            index,
             encoder,
         })
     }
@@ -328,6 +364,17 @@ impl ImageWriter {
             blocks: self.index.total_blocks(),
         })
     }
+}
+
+/// First nonce counter of a resumed run: past everything the checkpointed run may have used,
+/// plus a random offset that separates runs resumed from the same checkpoint.
+fn resume_nonce_start(checkpoint_counter: u64) -> Result<u64> {
+    let random = u64::from_le_bytes(crypto::random_bytes::<8>()) >> (64 - RESUME_NONCE_RANDOM_BITS);
+    checkpoint_counter
+        .checked_add(RESUME_NONCE_GAP)
+        .and_then(|n| n.checked_add(random))
+        .filter(|&n| n <= MAX_NONCE_START)
+        .ok_or_else(|| Error::InvalidArgument("nonce counter exhausted; start a new image".into()))
 }
 
 fn push_section(out: &mut Vec<u8>, tag: u32, data: &[u8]) {

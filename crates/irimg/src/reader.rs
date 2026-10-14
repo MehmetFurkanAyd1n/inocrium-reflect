@@ -106,6 +106,12 @@ impl ImageReader {
         };
 
         let last = files.last().unwrap();
+        // The metadata sits between the header and the footer; check before allocating.
+        let footer_at = last.metadata()?.len() - FOOTER_SIZE as u64;
+        let metadata_end = footer.metadata_offset.checked_add(footer.metadata_len).ok_or(Error::CorruptFooter)?;
+        if footer.metadata_offset < HEADER_SIZE as u64 || metadata_end > footer_at {
+            return Err(Error::CorruptFooter);
+        }
         let mut stored = vec![0u8; usize::try_from(footer.metadata_len).map_err(|_| Error::CorruptFooter)?];
         read_exact_at(last, footer.metadata_offset, &mut stored)?;
         if blake3::hash(&stored).as_bytes() != &footer.metadata_hash {
@@ -116,8 +122,15 @@ impl ImageReader {
                 .open(DOMAIN_METADATA, footer.metadata_nonce, &stored, header.image_id.as_bytes())
                 .ok_or(Error::CorruptMetadata)?;
         }
-        let plain =
-            zstd::bulk::decompress(&stored, footer.metadata_plain_len as usize).map_err(|_| Error::CorruptMetadata)?;
+        // `metadata_plain_len` is untrusted: reserve fallibly instead of letting a huge value
+        // abort the process, and let zstd fill only what it actually produces.
+        let plain_len = usize::try_from(footer.metadata_plain_len).map_err(|_| Error::CorruptMetadata)?;
+        let mut plain = Vec::new();
+        plain.try_reserve_exact(plain_len).map_err(|_| Error::CorruptMetadata)?;
+        zstd::bulk::Decompressor::new()?
+            .decompress_to_buffer(&stored, &mut plain)
+            .map_err(|_| Error::CorruptMetadata)?;
+        drop(stored);
         let (manifest, raw_regions, index) = parse_metadata(&plain)?;
         if manifest.image_id != header.image_id {
             return Err(Error::CorruptMetadata);
@@ -165,6 +178,11 @@ impl ImageReader {
 
     fn read_entry(&self, at: BlockRef, e: &IndexEntry) -> Result<Vec<u8>> {
         let f = self.files.get(e.file_no as usize).ok_or(Error::CorruptMetadata)?;
+        // A block never decodes to more than one block, and is stored at most a tag larger.
+        let bs = self.header.block_size;
+        if e.plain_len > bs || e.stored_len > bs + crypto::TAG_LEN as u32 {
+            return Err(Error::CorruptBlock { disk: at.disk, stream: at.stream, block: at.block });
+        }
         let mut stored = vec![0u8; e.stored_len as usize];
         read_exact_at(f, e.offset, &mut stored)?;
         decode_block(&self.header.image_id, self.sealer.as_ref(), at, e, &stored)
@@ -174,6 +192,9 @@ impl ImageReader {
     pub fn read_stream_at(&self, disk: u32, stream: u32, offset: u64, buf: &mut [u8]) -> Result<()> {
         let bs = self.header.block_size as u64;
         let mut done = 0usize;
+        offset
+            .checked_add(buf.len() as u64)
+            .ok_or_else(|| Error::InvalidArgument("read offset out of range".into()))?;
         while done < buf.len() {
             let pos = offset + done as u64;
             let block = pos / bs;
@@ -181,11 +202,13 @@ impl ImageReader {
             let n = (bs as usize - within).min(buf.len() - done);
             let dst = &mut buf[done..done + n];
             match self.read_block(disk, stream, block)? {
-                Some(data) => {
-                    let avail = data.len().saturating_sub(within).min(n);
+                // A short (final) block reads as zeros past its end.
+                Some(data) if within < data.len() => {
+                    let avail = (data.len() - within).min(n);
                     dst[..avail].copy_from_slice(&data[within..within + avail]);
                     dst[avail..].fill(0);
                 }
+                Some(_) => dst.fill(0),
                 None => dst.fill(0),
             }
             done += n;
@@ -292,4 +315,47 @@ fn read_at(f: &File, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
 #[cfg(unix)]
 fn read_at(f: &File, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
     std::os::unix::fs::FileExt::read_at(f, buf, offset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ImageWriter, WriterOptions};
+
+    #[test]
+    fn oversized_index_entry_is_a_bad_block_not_an_allocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("e.irimg");
+        let opts = WriterOptions {
+            block_size: crate::MIN_BLOCK_SIZE,
+            compression_level: 1,
+            password: None,
+            kdf: crate::KdfParams::insecure_fast(),
+            split_size: None,
+        };
+        let mut w = ImageWriter::create(&path, opts).unwrap();
+        let enc = w.encoder();
+        w.append(enc.encode(BlockRef { disk: 0, stream: 1, block: 0 }, &[3u8; 512])).unwrap();
+        let id = w.image_id();
+        let manifest = Manifest {
+            format_version: crate::FORMAT_VERSION,
+            image_id: id,
+            created: String::new(),
+            comment: String::new(),
+            tool_version: String::new(),
+            source: Default::default(),
+            block_size: crate::MIN_BLOCK_SIZE,
+            compression: crate::CompressionInfo { algorithm: "zstd".into(), level: 1 },
+            encryption: None,
+            definition_id: None,
+            disks: vec![],
+        };
+        w.finish(&manifest, &[]).unwrap();
+
+        let mut r = ImageReader::open(&path, None).unwrap();
+        r.index.streams.get_mut(&(0, 1)).unwrap()[0].stored_len = u32::MAX;
+        assert!(matches!(r.read_block(0, 1, 0), Err(Error::CorruptBlock { block: 0, .. })));
+        let rep = r.verify(|_| true).unwrap();
+        assert_eq!(rep.bad_blocks.len(), 1);
+    }
 }

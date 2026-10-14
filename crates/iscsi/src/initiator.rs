@@ -267,10 +267,74 @@ pub fn session_disks(s: &Session, timeout: Duration) -> Result<Vec<u32>> {
     }
 }
 
-/// Log out a session; the caller retains responsibility for removing its portal.
+/// `ISDSC_DEVICE_BUSY_ON_SESSION`: Plug and Play could not remove a device of the session
+/// because something holds it open.
+const DEVICE_BUSY_ON_SESSION: u32 = 0xEFFF_0040;
+/// How long [`logout`] keeps retrying while the session's device is busy.
+const LOGOUT_BUSY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Log out a session; the caller retains responsibility for removing its portal. When a disk
+/// of the session is busy, its removal is requested through Plug and Play first, as "Safely
+/// Remove Hardware" does, so holders of open handles are told to close them.
 pub fn logout(s: &Session) -> Result<()> {
+    let started = Instant::now();
+    let mut removal: Option<Option<String>> = None;
+    loop {
+        let mut id = native(s.session_id);
+        match unsafe { check(LogoutIScsiTarget(&mut id), "LogoutIScsiTarget") } {
+            Err(Error::Win32 { code: DEVICE_BUSY_ON_SESSION, .. }) if started.elapsed() < LOGOUT_BUSY_TIMEOUT => {
+                if removal.is_none() {
+                    removal = Some(remove_session_devices(s));
+                }
+                thread::sleep(Duration::from_millis(500));
+            }
+            Err(Error::Win32 { code: DEVICE_BUSY_ON_SESSION, .. }) => {
+                let pnp = match removal.flatten() {
+                    Some(veto) => format!("Plug and Play removal refused: {veto}"),
+                    None => "Plug and Play removal was not refused".into(),
+                };
+                return Err(Error::Io(std::io::Error::other(format!(
+                    "LogoutIScsiTarget: a device of the session is busy ({pnp})"
+                ))));
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Requests Plug and Play removal of the session's devices; describes any veto.
+fn remove_session_devices(s: &Session) -> Option<String> {
+    use windows::Win32::Devices::DeviceAndDriverInstallation::{
+        CM_Query_And_Remove_SubTreeW, CM_REMOVE_NO_RESTART, CR_SUCCESS, PNP_VETO_TYPE,
+    };
     let mut id = native(s.session_id);
-    unsafe { check(LogoutIScsiTarget(&mut id), "LogoutIScsiTarget") }
+    let mut count = 0;
+    let code = unsafe { GetDevicesForIScsiSessionW(&mut id, &mut count, ptr::null_mut()) };
+    if (code != 0 && !resize(code)) || count == 0 {
+        return None;
+    }
+    let mut devices = vec![ISCSI_DEVICE_ON_SESSIONW::default(); count as usize];
+    if unsafe { GetDevicesForIScsiSessionW(&mut id, &mut count, devices.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let mut vetoes = Vec::new();
+    for d in devices.iter().take(count as usize).filter(|d| d.DeviceInstance != 0) {
+        let mut veto = PNP_VETO_TYPE(0);
+        let mut name = [0u16; 260];
+        let r = unsafe {
+            CM_Query_And_Remove_SubTreeW(d.DeviceInstance, Some(&mut veto), Some(&mut name), CM_REMOVE_NO_RESTART)
+        };
+        if r != CR_SUCCESS {
+            vetoes.push(format!(
+                "disk {} was vetoed (CONFIGRET {}, veto type {}, by {:?})",
+                d.StorageDeviceNumber.DeviceNumber,
+                r.0,
+                veto.0,
+                fixed_string(&name)
+            ));
+        }
+    }
+    (!vetoes.is_empty()).then(|| vetoes.join("; "))
 }
 
 fn fixed_string(s: &[u16]) -> String {
@@ -319,10 +383,9 @@ pub fn cleanup_stale(iqn_prefix: &str) -> Result<()> {
                         addresses.push(addr);
                     }
                 }
-                if name.starts_with(iqn_prefix)
-                    && !addresses.is_empty()
-                    && addresses.len() == s.ConnectionCount as usize
-                {
+                // A session whose target died has no connections left while Windows keeps
+                // trying to reconnect it; with our prefix it is still ours.
+                if name.starts_with(iqn_prefix) && addresses.len() == s.ConnectionCount as usize {
                     candidates.extend(addresses);
                     stale.push(Session { session_id: plain(s.SessionId), connection_id: [0; 2] });
                 } else {
@@ -379,8 +442,13 @@ pub fn cleanup_stale(iqn_prefix: &str) -> Result<()> {
             }
         }
     }
+    // One session that cannot be logged out must not keep the others (and the portals) around.
+    let mut first_error = None;
     for s in stale {
-        logout(&s)?;
+        if let Err(e) = logout(&s) {
+            tracing::warn!("could not log out stale iSCSI session: {e}");
+            first_error.get_or_insert(e);
+        }
     }
     let mut count = 0;
     let code = unsafe { ReportIScsiSendTargetPortalsW(&mut count, ptr::null_mut()) };
@@ -388,7 +456,7 @@ pub fn cleanup_stale(iqn_prefix: &str) -> Result<()> {
         check(code, "ReportIScsiSendTargetPortalsW")?;
     }
     if count == 0 {
-        return Ok(());
+        return first_error.map_or(Ok(()), Err);
     }
     let mut portals = vec![ISCSI_TARGET_PORTAL_INFOW::default(); count as usize];
     unsafe {
@@ -412,7 +480,7 @@ pub fn cleanup_stale(iqn_prefix: &str) -> Result<()> {
             }
         }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]

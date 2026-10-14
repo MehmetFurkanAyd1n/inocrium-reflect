@@ -38,9 +38,20 @@ impl RpcError {
 }
 
 macro_rules! dto { ($name:ident { $($field:ident : $ty:ty),* $(,)? }) => {
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Clone, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub struct $name { $(pub $field: $ty),* }
+    impl std::fmt::Debug for $name {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let mut out = f.debug_struct(stringify!($name));
+            $(if matches!(stringify!($field), "password" | "secret") {
+                out.field(stringify!($field), &"<redacted>");
+            } else {
+                out.field(stringify!($field), &self.$field);
+            })*
+            out.finish()
+        }
+    }
 }; }
 macro_rules! wire_enum { ($name:ident { $($variant:ident),* $(,)? }) => {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,12 +119,20 @@ dto!(HistoryEntry { job_id: Uuid, kind: JobKind, title: String, state: JobState,
 pub struct EmptyParams {}
 dto!(IdParams { id: Uuid });
 dto!(SaveDefinitionParams { definition: Definition, password: Option<String> });
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupStartParams {
     #[serde(flatten)]
     pub definition: Definition,
     pub password: Option<String>,
+}
+impl std::fmt::Debug for BackupStartParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackupStartParams")
+            .field("definition", &self.definition)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImagesListParams {
@@ -210,6 +229,52 @@ methods! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn password_dtos_redact_debug_without_changing_wire_data() {
+        let password = "private IPC password";
+        macro_rules! check {
+            ($ty:ty, $json:expr) => {{
+                let input = $json;
+                let params: $ty = serde_json::from_value(input.clone()).unwrap();
+                let debug = format!("{params:?}");
+                assert!(!debug.contains(password));
+                assert!(debug.contains("<redacted>"));
+                assert_eq!(serde_json::to_value(params).unwrap(), input);
+            }};
+        }
+        let definition = serde_json::json!({
+            "id": Uuid::nil(), "name": "test", "enabled": false, "disks": [], "destination": "backup",
+            "prefix": "test", "mode": "smart", "compressionLevel": 0, "encrypt": true, "passwordSet": true,
+            "verify": false, "splitSize": null, "comment": "", "retention": null, "schedule": null,
+            "runMissed": false, "lastRun": null, "nextRun": null,
+        });
+        check!(SaveDefinitionParams, serde_json::json!({ "definition": definition, "password": password }));
+        let mut backup = definition.clone();
+        backup["password"] = password.into();
+        check!(BackupStartParams, backup);
+        check!(ImagePasswordParams, serde_json::json!({ "path": "image", "password": password }));
+        check!(
+            MountParams,
+            serde_json::json!({ "path": "image", "password": password, "disk": null,
+            "partition": null, "writable": false })
+        );
+        check!(
+            RestoreParams,
+            serde_json::json!({ "path": "image", "password": password, "disk": 0,
+            "partition": null, "targetDisk": 1, "targetPartition": null, "targetOffset": null, "extend": false })
+        );
+        check!(
+            ExportVhdxParams,
+            serde_json::json!({ "path": "image", "password": password, "disk": 0,
+            "output": "out" })
+        );
+        check!(
+            VibootStartParams,
+            serde_json::json!({ "path": "image", "password": password, "disk": 0,
+            "vmName": null, "memoryMb": 2048, "cpus": 2 })
+        );
+        check!(CredentialSetParams, serde_json::json!({ "target": "share", "user": "user", "password": password }));
+    }
     struct TestService;
     impl Service for TestService {
         fn service_info(&self, _: EmptyParams, _: &crate::server::ClientInfo) -> Result<ServiceInfo, RpcError> {

@@ -95,7 +95,7 @@ pub fn protective_mbr(total_sectors: u64) -> [u8; 512] {
             bootable: false,
             partition_type: GPT_PROTECTIVE,
             first_lba: 1,
-            sectors: (total_sectors - 1).min(u32::MAX as u64) as u32,
+            sectors: total_sectors.saturating_sub(1).min(u32::MAX as u64) as u32,
         }],
         None,
     );

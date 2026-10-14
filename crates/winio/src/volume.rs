@@ -62,7 +62,12 @@ impl Volume {
     /// Open a volume device; a trailing backslash is accepted.
     pub fn open(path: &str, writable: bool) -> Result<Self> {
         let path = device_path(path);
-        Ok(Self { device: Device::open(&path, writable)? })
+        let device = Device::open(&path, writable)?;
+        // The last sectors of a volume (NTFS keeps its backup boot sector there) lie beyond the
+        // file system; without extended DASD I/O, reads of them come back short. Volumes
+        // without a mounted file system reject the request and need no permission.
+        let _ = ioctl(device.handle.0, FSCTL_ALLOW_EXTENDED_DASD_IO, &[], &mut []);
+        Ok(Self { device })
     }
     /// Query volume length in bytes.
     pub fn length(&self) -> Result<u64> {

@@ -36,6 +36,83 @@ fn open_single(spec: &ImageSpec, password: Option<&str>) -> (tempfile::TempDir, 
     (dir, img)
 }
 
+/// Rebuild the root JSON block with a valid checksum so hostile fields reach the parser.
+fn rewrite_json(mut bytes: Vec<u8>, edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
+    use crate::format::{BlockHeader, FOOTER_LEN, HEADER_LEN, MAGIC};
+    use md5::{Digest, Md5};
+    let footer = bytes.len() - FOOTER_LEN as usize;
+    let off = u64::from_le_bytes(bytes[footer..footer + 8].try_into().unwrap()) as usize;
+    let hdr = BlockHeader::parse(bytes[off..off + HEADER_LEN as usize].try_into().unwrap());
+    let data = &bytes[off + HEADER_LEN as usize..off + HEADER_LEN as usize + hdr.len as usize];
+    let plain = if hdr.compressed() { zstd::bulk::decompress(data, 1 << 20).unwrap() } else { data.to_vec() };
+    let mut json = serde_json::from_slice(&plain).unwrap();
+    edit(&mut json);
+    let data = serde_json::to_vec(&json).unwrap();
+    let hdr = BlockHeader::new(&hdr.name, data.len() as u32, Md5::digest(&data).into(), true, false, false);
+    bytes.truncate(off);
+    bytes.extend_from_slice(&hdr.to_bytes());
+    bytes.extend_from_slice(&data);
+    bytes.extend_from_slice(&(off as u64).to_le_bytes());
+    bytes.extend_from_slice(MAGIC);
+    bytes
+}
+
+#[test]
+fn hostile_key_iterations_are_rejected_before_derivation() {
+    let spec = ImageSpec { password: Some(("pw", "aes-256")), ..sample_spec() };
+    let dir = tempfile::tempdir().unwrap();
+    for aes_type in ["aes-256", "none"] {
+        let bytes = rewrite_json(single_file(&spec).0, |j| {
+            j["_encryption"]["key_iterations"] = u32::MAX.into();
+            j["_encryption"]["aes_type"] = aes_type.into();
+        });
+        let path = write(dir.path(), "image.mrimgx", &bytes);
+        assert!(matches!(MrimgxImage::open(&path, Some("pw")), Err(Error::Unsupported(_))));
+    }
+}
+
+#[test]
+fn overflowing_inclusive_partition_length_is_rejected() {
+    let bytes = rewrite_json(single_file(&sample_spec()).0, |j| {
+        let geometry = &mut j["disks"][0]["partitions"][0]["_geometry"];
+        geometry["start"] = 0.into();
+        geometry["end"] = u64::MAX.into();
+        geometry["length"] = 0.into();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "image.mrimgx", &bytes);
+    assert!(matches!(MrimgxImage::open(&path, None), Err(Error::BadFormat(_))));
+}
+
+#[test]
+fn high_delta_index_stays_sparse_and_readable() {
+    let spec = sample_spec();
+    let dir = tempfile::tempdir().unwrap();
+    let (full, full_index) = single_file(&spec);
+    write(dir.path(), "SET-00-00.mrimgx", &full);
+    let meta = FileMeta { file_number: 1, increment: 1, backup_type: "inc", split: false, delta: true };
+    let mut w = FileWriter::new(&spec, meta);
+    let mut index: Vec<Vec<PartIndex>> =
+        vec![full_index[0].iter().map(|p| PartIndex { reserved: p.reserved.clone(), ..Default::default() }).collect()];
+    let elem = w.add_block(&pattern(4096, 7), 0, spec.disks[0].parts[0].number, 0);
+    index[0][0].deltas.push((u32::MAX - 1, elem));
+    let at = spec.disks[0].parts[0].data_base + u64::from(u32::MAX - 1) * 4096;
+    let bytes = rewrite_json(w.finish(Some(&index)), |j| {
+        j["disks"][0]["partitions"][0]["_header"]["block_count"] = u64::MAX.into();
+        j["disks"][0]["partitions"][0]["_geometry"]["length"] = (at + 4096).into();
+    });
+    let path = write(dir.path(), "SET-00-01.mrimgx", &bytes);
+    let img = MrimgxImage::open(&path, None).unwrap();
+    let dev = img.partition_device(0, 0).unwrap();
+    dev.read_at(spec.disks[0].parts[0].data_base + 4096, &mut []).unwrap();
+    let mut data = vec![0; 4096];
+    dev.read_at(at, &mut data).unwrap();
+    assert_eq!(data, pattern(4096, 7));
+    dev.read_at(at - 4096, &mut data).unwrap();
+    assert!(data.iter().all(|&b| b == 0));
+    assert!(img.verify(&mut |_, _| true).unwrap().ok);
+}
+
 #[test]
 fn image_is_send_and_sync() {
     fn assert<T: Send + Sync>() {}

@@ -1,6 +1,6 @@
 //! Opening an image (or backup set), building the block layout and decoding blocks.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::io::Read;
 use std::num::NonZeroUsize;
@@ -23,6 +23,8 @@ use crate::format::{
 
 /// Upper bound for a decoded metadata block (JSON, track 0, block index).
 const MAX_METADATA_LEN: u64 = 1 << 31;
+/// Reject hostile PBKDF2 work factors before deriving the image key.
+const MAX_KEY_ITERATIONS: u32 = 10_000_000;
 /// Upper bound for the buffered FAT reserved sectors area of one partition.
 const MAX_RESERVED_LEN: u64 = 512 << 20;
 /// Number of decoded data blocks kept in memory.
@@ -117,7 +119,10 @@ fn read_at(file: &File, len: u64, off: u64, n: u64) -> Result<Vec<u8>> {
     if off.checked_add(n).is_none_or(|end| end > len) {
         return Err(Error::corrupt(format!("structure at offset {off} (+{n} bytes) extends past the end of the file")));
     }
-    let mut buf = vec![0; usize::try_from(n).map_err(|_| Error::corrupt("block too large"))?];
+    let n = usize::try_from(n).map_err(|_| Error::corrupt("block too large"))?;
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(n).map_err(|_| Error::corrupt("block allocation failed"))?;
+    buf.resize(n, 0);
     read_exact_at(file, off, &mut buf)?;
     Ok(buf)
 }
@@ -127,8 +132,11 @@ fn read_at(file: &File, len: u64, off: u64, n: u64) -> Result<Vec<u8>> {
 fn zstd_decode(data: &[u8], cap: u64) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     zstd::stream::read::Decoder::with_buffer(data)
-        .and_then(|d| d.single_frame().take(cap).read_to_end(&mut out))
+        .and_then(|d| d.single_frame().take(cap + 1).read_to_end(&mut out))
         .map_err(|e| Error::corrupt(format!("zstd decompression failed: {e}")))?;
+    if out.len() as u64 > cap {
+        return Err(Error::corrupt("decoded block exceeds its size limit"));
+    }
     Ok(out)
 }
 
@@ -251,6 +259,9 @@ impl Iterator for MetaList<'_> {
 /// Reads, checks and decodes the payload of the metadata block whose header is at `off`.
 /// The MD5 covers the stored bytes; decryption (AES-ECB) precedes decompression.
 fn read_meta_payload(file: &File, len: u64, off: u64, hdr: &BlockHeader, crypto: Option<&Crypto>) -> Result<Vec<u8>> {
+    if u64::from(hdr.len) > MAX_METADATA_LEN {
+        return Err(Error::corrupt("stored metadata block too large"));
+    }
     let mut data = read_at(file, len, off + HEADER_LEN, u64::from(hdr.len))?;
     if <[u8; 16]>::from(Md5::digest(&data)) != hdr.md5 {
         return Err(Error::corrupt(format!("MD5 mismatch in metadata block {}", hdr.name_str())));
@@ -308,6 +319,7 @@ pub(crate) struct PartLayout {
     data_base: u64,
     block_size: u32,
     blocks: Vec<IndexElem>,
+    sparse: BTreeMap<usize, IndexElem>,
     reserved: Vec<IndexElem>,
     reserved_len: u64,
     boot_sector_offset: u64,
@@ -318,7 +330,8 @@ pub(crate) struct PartLayout {
 
 impl PartLayout {
     fn new(disk: &DiskJson, p: &format::PartitionJson, index: &mut PartitionIndex) -> Result<Self> {
-        let data_end = (index.blocks.len() as u64)
+        let block_count = index.blocks.len().max(index.sparse.last_key_value().map_or(0, |(&i, _)| i + 1));
+        let data_end = (block_count as u64)
             .checked_mul(u64::from(p.block_size))
             .and_then(|n| n.checked_add(p.data_base()))
             .ok_or_else(|| Error::corrupt("partition block index too large"))?;
@@ -333,6 +346,7 @@ impl PartLayout {
             data_base: p.data_base(),
             block_size: p.block_size,
             blocks: std::mem::take(&mut index.blocks),
+            sparse: std::mem::take(&mut index.sparse),
             reserved: std::mem::take(&mut index.reserved),
             reserved_len: p.reserved_len,
             boot_sector_offset: p.boot_sector_offset,
@@ -347,6 +361,11 @@ impl Inner {
     /// Reads and decodes one stored block. `iv_index` is the position in its index (holes
     /// included), `cap` the largest plausible decoded size.
     fn decode(&self, p: &PartLayout, e: &IndexElem, iv_index: usize, cap: u32) -> Result<Vec<u8>> {
+        // Compression can expand incompressible data; AES adds at most fifteen padding bytes.
+        let stored_cap = if self.compressed { zstd::zstd_safe::compress_bound(cap as usize) } else { cap as usize };
+        if e.len as usize > stored_cap + 15 {
+            return Err(Error::corrupt("stored data block too large"));
+        }
         let file = self.files.get(&e.file).ok_or_else(|| Error::MissingFile(format!("file number {}", e.file)))?;
         let mut data = read_at(file, self.file_lens[&e.file], e.pos, u64::from(e.len))?;
         if let Some(c) = &self.crypto {
@@ -376,7 +395,8 @@ impl Inner {
             return Ok(b.clone());
         }
         let p = &self.disks[disk].partitions[part];
-        let data = Arc::new(self.decode(p, &p.blocks[i], i, p.block_size)?);
+        let e = p.blocks.get(i).or_else(|| p.sparse.get(&i)).ok_or_else(|| Error::corrupt("missing block index"))?;
+        let data = Arc::new(self.decode(p, e, i, p.block_size)?);
         self.cache.lock().put(key, data.clone());
         Ok(data)
     }
@@ -410,6 +430,9 @@ impl Inner {
     /// Copies stored partition content overlapping `[off, off + buf.len())` into `buf`
     /// (partition-relative). Bytes without stored data are left untouched.
     pub(crate) fn overlay_partition(&self, disk: usize, part: usize, off: u64, buf: &mut [u8]) -> Result<()> {
+        if buf.is_empty() {
+            return Ok(());
+        }
         let p = &self.disks[disk].partitions[part];
         let end = off + buf.len() as u64;
         if p.reserved_len > 0 && !p.reserved.is_empty() {
@@ -432,6 +455,12 @@ impl Inner {
             }
             let data = self.block(disk, part, i)?;
             copy_overlap(&data, p.data_base + i as u64 * bs, off, buf);
+        }
+        for (&i, e) in p.sparse.range(first..=last) {
+            if !e.is_hole() {
+                let data = self.block(disk, part, i)?;
+                copy_overlap(&data, p.data_base + i as u64 * bs, off, buf);
+            }
         }
         Ok(())
     }
@@ -494,6 +523,9 @@ fn unlock(json: &ImageJson, password: Option<&str>) -> Result<Option<Crypto>> {
     let password = password.ok_or(Error::PasswordRequired)?;
     if enc.key_iterations == 0 {
         return Err(Error::corrupt("encryption enabled with 0 key iterations"));
+    }
+    if enc.key_iterations > MAX_KEY_ITERATIONS {
+        return Err(Error::Unsupported("encryption key iteration count exceeds the safety limit".into()));
     }
     let key = Crypto::derive_key(password, &json.image_id_bin, enc.key_iterations);
     if !Crypto::check_hmac(&key, &enc.hmac)? {
@@ -595,8 +627,9 @@ impl MrimgxImage {
                 check_shape(&merged, &delta)?;
                 for ((md, dd), dj) in merged.iter_mut().zip(delta).zip(&restoration.json.disks) {
                     for ((mp, dp), pj) in md.partitions.iter_mut().zip(dd.partitions).zip(&dj.partitions) {
-                        // Bound the index so a garbled delta cannot make us allocate gigabytes.
+                        // Check logical bounds; records beyond the base index stay sparse.
                         let limit = (mp.blocks.len() as u64)
+                            .max(mp.sparse.last_key_value().map_or(0, |(&i, _)| i as u64 + 1))
                             .max(pj.block_count)
                             .max(pj.len().div_ceil(u64::from(pj.block_size)));
                         for (i, e) in dp.deltas {
@@ -605,9 +638,10 @@ impl MrimgxImage {
                             }
                             let i = i as usize;
                             if i >= mp.blocks.len() {
-                                mp.blocks.resize(i + 1, IndexElem::default());
+                                mp.sparse.insert(i, e);
+                            } else {
+                                mp.blocks[i] = e;
                             }
-                            mp.blocks[i] = e;
                         }
                         if is_restoration {
                             // restore.cpp takes the reserved sectors index from the restoration file.
@@ -727,26 +761,34 @@ impl MrimgxImage {
     pub fn verify(&self, progress: &mut dyn FnMut(u64, u64) -> bool) -> Result<VerifyResult> {
         let inner = &self.inner;
         let stored = |v: &[IndexElem]| v.iter().filter(|e| !e.is_hole()).count() as u64;
-        let total: u64 =
-            inner.disks.iter().flat_map(|d| &d.partitions).map(|p| stored(&p.reserved) + stored(&p.blocks)).sum();
+        let total: u64 = inner
+            .disks
+            .iter()
+            .flat_map(|d| &d.partitions)
+            .map(|p| {
+                stored(&p.reserved) + stored(&p.blocks) + p.sparse.values().filter(|e| !e.is_hole()).count() as u64
+            })
+            .sum();
         let mut res = VerifyResult::default();
         for p in inner.disks.iter().flat_map(|d| &d.partitions) {
-            let lists = [(&p.reserved, MAX_BLOCK_SIZE), (&p.blocks, p.block_size)];
-            for (list, cap) in lists {
-                for (i, e) in list.iter().enumerate().filter(|(_, e)| !e.is_hole()) {
-                    match inner.decode(p, e, i, cap) {
-                        Ok(_) => {}
-                        Err(Error::Corrupt(_)) => res.bad_blocks += 1,
-                        Err(e) => return Err(e),
-                    }
-                    res.checked_blocks += 1;
-                    if !progress(res.checked_blocks, total) {
-                        res.message = format!(
-                            "cancelled after {} of {total} blocks ({} bad)",
-                            res.checked_blocks, res.bad_blocks
-                        );
-                        return Ok(res);
-                    }
+            let entries = p
+                .reserved
+                .iter()
+                .enumerate()
+                .map(|(i, e)| (i, e, MAX_BLOCK_SIZE))
+                .chain(p.blocks.iter().enumerate().map(|(i, e)| (i, e, p.block_size)))
+                .chain(p.sparse.iter().map(|(&i, e)| (i, e, p.block_size)));
+            for (i, e, cap) in entries.filter(|(_, e, _)| !e.is_hole()) {
+                match inner.decode(p, e, i, cap) {
+                    Ok(_) => {}
+                    Err(Error::Corrupt(_)) => res.bad_blocks += 1,
+                    Err(e) => return Err(e),
+                }
+                res.checked_blocks += 1;
+                if !progress(res.checked_blocks, total) {
+                    res.message =
+                        format!("cancelled after {} of {total} blocks ({} bad)", res.checked_blocks, res.bad_blocks);
+                    return Ok(res);
                 }
             }
         }
@@ -764,7 +806,9 @@ impl MrimgxImage {
 fn referenced(meta: &[DiskMeta]) -> BTreeSet<u16> {
     meta.iter()
         .flat_map(|d| &d.partitions)
-        .flat_map(|p| p.reserved.iter().chain(&p.blocks).chain(p.deltas.iter().map(|(_, e)| e)))
+        .flat_map(|p| {
+            p.reserved.iter().chain(&p.blocks).chain(p.sparse.values()).chain(p.deltas.iter().map(|(_, e)| e))
+        })
         .filter(|e| !e.is_hole())
         .map(|e| e.file)
         .collect()
@@ -777,5 +821,39 @@ fn check_shape(a: &[DiskMeta], b: &[DiskMeta]) -> Result<()> {
         Ok(())
     } else {
         Err(Error::Unsupported("backup set files describe different disk/partition layouts".into()))
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use crate::testutil::{sample_spec, single_file};
+
+    #[test]
+    fn oversized_zstd_frame_is_rejected_instead_of_truncated() {
+        let frame = zstd::bulk::compress(&[7; 4097], 3).unwrap();
+        assert!(matches!(zstd_decode(&frame, 4096), Err(Error::Corrupt(_))));
+        assert_eq!(zstd_decode(&frame, 4097).unwrap(), vec![7; 4097]);
+    }
+
+    #[test]
+    fn oversized_metadata_is_rejected_before_reading() {
+        let file = tempfile::tempfile().unwrap();
+        let hdr = BlockHeader::new(names::JSON, u32::MAX, [0; 16], true, false, false);
+        assert!(matches!(read_meta_payload(&file, u64::MAX, 0, &hdr, None),
+            Err(Error::Corrupt(message)) if message == "stored metadata block too large"));
+    }
+
+    #[test]
+    fn oversized_stored_data_block_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image.mrimgx");
+        std::fs::write(&path, single_file(&sample_spec()).0).unwrap();
+        let mut img = MrimgxImage::open(&path, None).unwrap();
+        let inner = Arc::get_mut(&mut img.inner).unwrap();
+        inner.disks[0].partitions[0].blocks[0].len = u32::MAX;
+        let result = img.verify(&mut |_, _| true).unwrap();
+        assert!(!result.ok);
+        assert_eq!(result.bad_blocks, 1);
     }
 }

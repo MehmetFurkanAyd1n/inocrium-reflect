@@ -1,18 +1,28 @@
+
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Inocrium.App", "Inocrium.App\Inocrium.App.csproj", "{8EE36C26-9CFA-447E-BF8E-516E69A7779D}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProtocolChecks", "ProtocolChecks\ProtocolChecks.csproj", "{CF0CF2C2-7630-428D-80BF-EFE033C5D22D}"
+EndProject
 Global
-  GlobalSection(SolutionConfigurationPlatforms) = preSolution
-    Release|x64 = Release|x64
-    Debug|x64 = Debug|x64
-  EndGlobalSection
-  GlobalSection(ProjectConfigurationPlatforms) = postSolution
-    {8EE36C26-9CFA-447E-BF8E-516E69A7779D}.Release|x64.ActiveCfg = Release|x64
-    {8EE36C26-9CFA-447E-BF8E-516E69A7779D}.Release|x64.Build.0 = Release|x64
-    {8EE36C26-9CFA-447E-BF8E-516E69A7779D}.Debug|x64.ActiveCfg = Debug|x64
-    {8EE36C26-9CFA-447E-BF8E-516E69A7779D}.Debug|x64.Build.0 = Debug|x64
-  EndGlobalSection
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Release|x64 = Release|x64
+		Debug|x64 = Debug|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8EE36C26-9CFA-447E-BF8E-516E69A7779D}.Release|x64.ActiveCfg = Release|x64
+		{8EE36C26-9CFA-447E-BF8E-516E69A7779D}.Release|x64.Build.0 = Release|x64
+		{8EE36C26-9CFA-447E-BF8E-516E69A7779D}.Debug|x64.ActiveCfg = Debug|x64
+		{8EE36C26-9CFA-447E-BF8E-516E69A7779D}.Debug|x64.Build.0 = Debug|x64
+		{CF0CF2C2-7630-428D-80BF-EFE033C5D22D}.Release|x64.ActiveCfg = Release|Any CPU
+		{CF0CF2C2-7630-428D-80BF-EFE033C5D22D}.Release|x64.Build.0 = Release|Any CPU
+		{CF0CF2C2-7630-428D-80BF-EFE033C5D22D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{CF0CF2C2-7630-428D-80BF-EFE033C5D22D}.Debug|x64.Build.0 = Debug|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
 EndGlobal

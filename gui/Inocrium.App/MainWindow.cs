@@ -14,6 +14,7 @@ public sealed partial class MainWindow : Window
     private readonly InfoBar errorBar = new() { IsClosable = true, Severity = InfoBarSeverity.Error, Title = "Action failed" };
     private readonly StackPanel page = new() { Spacing = 16, Margin = new Thickness(28) };
     private string currentPage = "Disks";
+    private readonly SemaphoreSlim passwordDialogGate = new(1);
     public MainWindow(ShellViewModel viewModel)
     {
         vm = viewModel; Title = "inocrium reflect"; SystemBackdrop = new MicaBackdrop();
@@ -38,7 +39,7 @@ public sealed partial class MainWindow : Window
         vm.Credentials.CollectionChanged += (_, _) => Changed("Settings");
         vm.VirtualMachines.CollectionChanged += (_, _) => Changed("Existing images");
         Content = root; navigation.SelectedItem = navigation.MenuItems[0];
-        connectionBar.Message = vm.Status; vm.Rpc.Start();
+        connectionBar.Message = vm.Status; vm.Rpc.PasswordRequested = RequestPasswordAsync; vm.Rpc.Start();
     }
     private void Changed(string name) { if (currentPage == name) RenderPage(); }
     private void RenderPage()

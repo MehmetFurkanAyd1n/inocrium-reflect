@@ -29,6 +29,14 @@ that payload, and builds WiX. `Configuration` selects the GUI and MSI configurat
 Rust is always built with `--release`. Outputs are
 `installer/out/<Platform>/inocrium-reflect-<Version>-<Platform>.msi`.
 Version must be three numeric MSI fields (major/minor <= 255, patch <= 65535).
+The script respects `CARGO_TARGET_DIR` (default: `target`) and harvests binaries
+from its `<Rust target>/release` directory.
+The unpackaged GUI resource index is `Inocrium.App.pri`.
+
+WiX validation remains enabled except for ICE03. Windows App SDK 1.6's XAML DLLs
+contain language lists longer than ICE03's column limit, and its MUI files use
+LCIDs 1152, 1153 and 1169 missing from ICE03's older language catalog. Their
+vendor binaries and detected metadata are preserved; other ICE checks still run.
 
 For existing payloads, build WiX directly:
 
@@ -44,8 +52,8 @@ prepared GUI payload. The GUI project has no explicit `AssemblyName`, so its
 project name yields `Inocrium.App.exe`. The Rust binaries are `inocrium.exe` and
 `inocrium-service.exe`.
 
-The per-machine MSI installs to `ProgramFiles64Folder\inocrium reflect`, appends
-the install directory to the system PATH, creates a Start-menu shortcut, and
+The per-machine MSI installs to `ProgramFiles64Folder\inocrium reflect`, optionally
+appends the install directory to the system PATH (`ADDLOCAL=ALL`), creates a Start-menu shortcut, and
 registers `InocriumReflect` as an automatic LocalSystem service. It starts/stops
 the service during installation/removal and configures restart after failures
 (60-second delay, reset after one day). The service must enter Windows service

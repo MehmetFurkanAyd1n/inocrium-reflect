@@ -121,6 +121,9 @@ impl ImageDiskView {
     /// The whole disk `disk` of the image.
     pub fn disk(reader: Arc<ImageReader>, disk: u32, opts: ViewOptions) -> io::Result<Self> {
         let d = disk_manifest(&reader, disk)?.clone();
+        if !table::valid_gpt_geometry(&d) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "unsupported GPT geometry in image"));
+        }
         let mut segments = SegmentMap::new(d.size);
         let mut track0 = None;
         for r in reader.raw_regions(disk) {
@@ -150,8 +153,16 @@ impl ImageDiskView {
             .partition(number)
             .filter(|p| p.captured)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("partition {number} not in image")))?;
+        if !table::valid_sector_size(d.sector_size) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid sector size in image"));
+        }
         let ss = d.sector_size as u64;
-        let size = MIB + p.length.div_ceil(MIB) * MIB + MIB;
+        let size = p
+            .length
+            .div_ceil(MIB)
+            .checked_mul(MIB)
+            .and_then(|n| n.checked_add(2 * MIB))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "partition too large"))?;
         let table = Gpt {
             disk_id: Uuid::new_v4(),
             sector_size: d.sector_size,
@@ -216,12 +227,13 @@ impl ImageDiskView {
             let n = (self.image_block as usize - within).min(buf.len());
             let (dst, rest) = buf.split_at_mut(n);
             match self.block(stream, pos / self.image_block)? {
-                Some(data) => {
-                    let avail = data.len().saturating_sub(within).min(n);
+                // A short (final) block may end before `within`.
+                Some(data) if within < data.len() => {
+                    let avail = (data.len() - within).min(n);
                     dst[..avail].copy_from_slice(&data[within..within + avail]);
                     dst[avail..].fill(0);
                 }
-                None => dst.fill(0),
+                _ => dst.fill(0),
             }
             pos += n as u64;
             buf = rest;
@@ -319,12 +331,23 @@ mod tests {
     /// Two partitions at 1 MiB (4 MiB, captured, blocks 0..3 stored except block 2) and
     /// 6 MiB (2 MiB, not captured).
     fn image(dir: &std::path::Path, layout: PartitionStyle, track0: Vec<u8>) -> Arc<ImageReader> {
+        image_with(dir, layout, track0, &[(0, BS as usize), (1, BS as usize), (3, BS as usize)], 512)
+    }
+
+    /// Like [`image`], storing the first `len` bytes of each `(block, len)` of stream 1.
+    fn image_with(
+        dir: &std::path::Path,
+        layout: PartitionStyle,
+        track0: Vec<u8>,
+        blocks: &[(u64, usize)],
+        sector_size: u32,
+    ) -> Arc<ImageReader> {
         let gpt = matches!(layout, PartitionStyle::Gpt { .. });
         let path = dir.join("t.irimg");
         let mut w = ImageWriter::create(&path, WriterOptions { block_size: BS, ..Default::default() }).unwrap();
         let enc = w.encoder();
-        for b in [0u64, 1, 3] {
-            w.append(enc.encode(BlockRef { disk: 0, stream: 1, block: b }, &pattern(1, b))).unwrap();
+        for &(b, len) in blocks {
+            w.append(enc.encode(BlockRef { disk: 0, stream: 1, block: b }, &pattern(1, b)[..len])).unwrap();
         }
         let m = Manifest {
             format_version: FORMAT_VERSION,
@@ -343,7 +366,7 @@ mod tests {
                 model: String::new(),
                 serial: String::new(),
                 size: SIZE,
-                sector_size: 512,
+                sector_size,
                 physical_sector_size: 512,
                 layout,
                 partitions: vec![part(1, 1, MIB, 4 * MIB, true, gpt), part(2, 2, 6 * MIB, 2 * MIB, false, gpt)],
@@ -494,5 +517,60 @@ mod tests {
         check_partition_data(&v, MIB);
         // Tail padding up to the backup GPT (33 sectors) is empty.
         assert!(read(&v, 5 * MIB, MIB as usize - 33 * 512).iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn read_past_short_block_is_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let reader = image_with(dir.path(), PartitionStyle::Mbr { signature: 1 }, vec![0; 512], &[(0, 1000)], 512);
+        let v = ImageDiskView::partition(reader, 0, 1, ViewOptions::default()).unwrap();
+        assert!(read(&v, MIB + 2000, 100).iter().all(|&b| b == 0));
+        let r = read(&v, MIB + 950, 100);
+        assert_eq!(r[..50], pattern(1, 0)[950..1000]);
+        assert!(r[50..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn bad_sector_size_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = PartitionStyle::Gpt {
+            disk_id: Uuid::nil(),
+            first_usable_lba: 34,
+            last_usable_lba: 0,
+            max_partition_count: 128,
+        };
+        let reader = image_with(dir.path(), layout, vec![0; 512], &[(0, 1000)], 0);
+        assert!(ImageDiskView::partition(reader.clone(), 0, 1, ViewOptions::default()).is_err());
+        assert!(ImageDiskView::disk(reader, 0, ViewOptions::default()).is_err());
+    }
+
+    #[test]
+    fn hostile_gpt_geometry_is_rejected_without_clamping() {
+        for (count, first) in [(u32::MAX, 2048), (128, u64::MAX)] {
+            let dir = tempfile::tempdir().unwrap();
+            let layout = PartitionStyle::Gpt {
+                disk_id: Uuid::nil(),
+                first_usable_lba: first,
+                last_usable_lba: 0,
+                max_partition_count: count,
+            };
+            let reader = image(dir.path(), layout, vec![0; 512]);
+            assert!(ImageDiskView::disk(reader, 0, ViewOptions::default()).is_err());
+        }
+    }
+
+    #[test]
+    fn disk_view_preserves_usable_boundary_with_compact_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = PartitionStyle::Gpt {
+            disk_id: Uuid::nil(),
+            first_usable_lba: 8192,
+            last_usable_lba: 0,
+            max_partition_count: 128,
+        };
+        let reader = image(dir.path(), layout, vec![0; 512]);
+        let v = ImageDiskView::disk(reader, 0, ViewOptions::default()).unwrap();
+        let (h, _) = crate::gpt::parse_primary(&read(&v, 0, 34 * 512), 512).unwrap();
+        assert_eq!(h.first_usable_lba, 8192);
     }
 }

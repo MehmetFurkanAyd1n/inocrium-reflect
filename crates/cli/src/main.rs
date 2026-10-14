@@ -10,6 +10,8 @@ mod password;
 mod progress;
 #[cfg(windows)]
 mod remote;
+#[cfg(all(windows, test))]
+mod test_support;
 
 #[cfg(windows)]
 fn main() {
@@ -18,8 +20,11 @@ fn main() {
     let code = match run(&cli) {
         Ok(code) => code,
         Err(error) => {
-            if cli.json { eprintln!("{}", serde_json::json!({"error": format!("{error:#}")})); }
-            else { eprintln!("Error: {error:#}"); }
+            if cli.json {
+                eprintln!("{}", serde_json::json!({"error": format!("{error:#}")}));
+            } else {
+                eprintln!("Error: {error:#}");
+            }
             1
         }
     };
@@ -40,10 +45,21 @@ fn run(cli: &args::Cli) -> anyhow::Result<i32> {
             Err(error) => eprintln!("Service unavailable ({error}); trying direct mode."),
         }
     }
-    anyhow::ensure!(winio::is_elevated(), "The service is not reachable and direct mode requires administrator privileges. Start the service or run an elevated console.");
+    if matches!(&cli.command, args::Command::Viboot { .. }) {
+        anyhow::bail!("viBoot requires the background service to maintain a persistent VM and writable mount");
+    }
+    if matches!(&cli.command, args::Command::Jobs { .. } | args::Command::History { .. } | args::Command::Logs { .. }) {
+        anyhow::bail!("This command requires the background service");
+    }
+    anyhow::ensure!(
+        winio::is_elevated(),
+        "Direct mode requires administrator privileges. Start the service or run an elevated console."
+    );
     anyhow::ensure!(!cli.detach, "--detach requires the service; direct operations run in this process");
     match direct::run(cli, &mut passwords, &cancel) {
-        Err(error) if error.downcast_ref::<engine::Error>().is_some_and(|e| matches!(e, engine::Error::Cancelled)) => Ok(130),
+        Err(error) if error.downcast_ref::<engine::Error>().is_some_and(|e| matches!(e, engine::Error::Cancelled)) => {
+            Ok(130)
+        }
         result => result,
     }
 }

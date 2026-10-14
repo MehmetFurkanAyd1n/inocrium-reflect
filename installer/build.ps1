@@ -27,8 +27,8 @@ $runtimeId = if ($Platform -eq 'ARM64') { 'win-arm64' } else { 'win-x64' }
 Get-Command cargo, dotnet -ErrorAction Stop | Out-Null
 Push-Location $repoRoot
 try {
-    # Isolate Rust artifacts from any caller's CARGO_TARGET_DIR setting.
-    $cargoTargetDir = Join-Path $repoRoot 'target'
+    # Respect callers' isolated build directories and use the same path for harvesting.
+    $cargoTargetDir = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $repoRoot 'target' }
     & cargo build --release -p inocrium-service -p inocrium --target $rustTarget --target-dir $cargoTargetDir
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE." }
     $rustOutDir = Join-Path $cargoTargetDir "$rustTarget\release"
@@ -44,19 +44,17 @@ try {
     }
     New-Item -ItemType Directory -Path $guiPublishDir -Force | Out-Null
 
-    # VS MSBuild supplies PRI/XAML tasks that can be missing from bare dotnet SDK installs.
-    # Use its environment for dotnet publish when available (CI uses setup-msbuild).
-    $msbuildCommand = Get-Command msbuild -ErrorAction SilentlyContinue
-    if ($null -ne $msbuildCommand) {
-        $vsToolsPath = Split-Path -Parent $msbuildCommand.Source
-        $publishToolsArguments = @("-p:MSBuildExtensionsPath=$vsToolsPath")
-    } else {
-        $publishToolsArguments = @()
-    }
+    # WinUI publishing requires the project's PRI/XAML tooling and Windows SDK.
     & dotnet publish (Join-Path $repoRoot 'gui\Inocrium.App\Inocrium.App.csproj') `
         -c $Configuration -r $runtimeId --self-contained true -o $guiPublishDir `
-        "-p:Platform=$Platform" '-p:WindowsAppSDKSelfContained=true' @publishToolsArguments
+        "-p:Platform=$Platform" '-p:WindowsAppSDKSelfContained=true'
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
+
+    foreach ($payloadFile in @('Inocrium.App.exe', 'Inocrium.App.pri', 'coreclr.dll', 'Microsoft.UI.Xaml.dll')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $guiPublishDir $payloadFile))) {
+            throw "GUI publish payload is incomplete: missing $payloadFile in $guiPublishDir."
+        }
+    }
 
     Copy-Item -LiteralPath (Join-Path $repoRoot 'LICENSE') -Destination (Join-Path $guiPublishDir 'LICENSE')
     & dotnet build (Join-Path $PSScriptRoot 'Inocrium.Installer.wixproj') `

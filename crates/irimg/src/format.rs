@@ -86,6 +86,10 @@ impl FileHeader {
         if blake3::hash(&b[..HEADER_HASH_OFFSET]).as_bytes() != &b[HEADER_HASH_OFFSET..HEADER_SIZE] {
             return Err(Error::CorruptHeader);
         }
+        let block_size = get_u32(b, 40);
+        if !(crate::MIN_BLOCK_SIZE..=crate::MAX_BLOCK_SIZE).contains(&block_size) || !block_size.is_power_of_two() {
+            return Err(Error::CorruptHeader);
+        }
         let flags = get_u32(b, 16);
         let key_slot = if flags & FLAG_ENCRYPTED != 0 {
             if get_u32(b, 44) != KDF_ARGON2ID {
@@ -105,7 +109,7 @@ impl FileHeader {
             flags,
             file_no: get_u32(b, 20),
             image_id: Uuid::from_bytes(b[24..40].try_into().unwrap()),
-            block_size: get_u32(b, 40),
+            block_size,
             created_unix: i64::from_le_bytes(b[152..160].try_into().unwrap()),
             key_slot,
         })
@@ -216,5 +220,21 @@ mod tests {
             metadata_hash: [5; 32],
         };
         assert_eq!(Footer::decode(&f.encode()).unwrap(), f);
+    }
+
+    #[test]
+    fn header_rejects_bad_block_size() {
+        for block_size in [0, 1, crate::MIN_BLOCK_SIZE + 1, crate::MAX_BLOCK_SIZE * 2] {
+            let h = FileHeader {
+                version: FORMAT_VERSION,
+                flags: 0,
+                file_no: 0,
+                image_id: Uuid::new_v4(),
+                block_size,
+                created_unix: 0,
+                key_slot: None,
+            };
+            assert!(matches!(FileHeader::decode(&h.encode()), Err(Error::CorruptHeader)), "{block_size}");
+        }
     }
 }
