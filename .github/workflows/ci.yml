@@ -86,7 +86,7 @@ jobs:
         env:
           RELEASE_REF: ${{ github.ref }}
         run: |
-          $version = '0.1.4'
+          $version = '0.1.5'
           if ($env:RELEASE_REF.StartsWith('refs/tags/v')) {
             $version = $env:RELEASE_REF.Substring('refs/tags/v'.Length)
           }

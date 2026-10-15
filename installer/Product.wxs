@@ -40,6 +40,11 @@
           <Environment Id="CliPath" Name="PATH" Value="[INSTALLFOLDER]"
                        Action="set" Part="last" System="yes" Permanent="no" />
         </Component>
+        <!-- The AI restore guide and its helper; `inocrium skill` finds it next to the CLI. Its
+             elevation helper must stay in this admin-only folder. -->
+        <Directory Id="SkillFolder" Name="skill">
+          <Directory Id="RestoreSkillFolder" Name="restore-from-backup" />
+        </Directory>
       </Directory>
     </StandardDirectory>
 
@@ -63,6 +68,7 @@
       <ComponentRef Id="CliComponent" />
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentGroupRef Id="GuiPayload" />
+      <ComponentGroupRef Id="SkillPayload" />
     </Feature>
     <!-- Opt in from the command line with ADDLOCAL=ALL, or name both features. -->
     <Feature Id="CliPathFeature" Title="Add CLI to system PATH" Level="2">
@@ -73,6 +79,9 @@
   <Fragment>
     <ComponentGroup Id="GuiPayload" Directory="INSTALLFOLDER">
       <Files Include="$(var.GuiPublishDir)\**" />
+    </ComponentGroup>
+    <ComponentGroup Id="SkillPayload" Directory="RestoreSkillFolder">
+      <Files Include="$(sys.SOURCEFILEDIR)..\skill\restore-from-backup\**" />
     </ComponentGroup>
   </Fragment>
 </Wix>

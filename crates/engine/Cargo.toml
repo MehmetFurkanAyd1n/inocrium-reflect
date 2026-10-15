@@ -25,3 +25,4 @@ winio.workspace = true
 vss.workspace = true
 iscsi.workspace = true
 mrimgx.workspace = true
+ipc.workspace = true

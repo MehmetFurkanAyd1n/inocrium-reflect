@@ -27,6 +27,10 @@ pub enum Command {
     Verify {
         img: PathBuf,
     },
+    /// Show what an image contains: disks, partitions, file systems and sizes.
+    Info {
+        img: PathBuf,
+    },
     Mount {
         img: PathBuf,
         #[arg(long)]
@@ -74,6 +78,22 @@ pub enum Command {
     Logs {
         job_id: Uuid,
     },
+    /// Print the guide that lets an AI assistant restore files from a backup image.
+    Skill {
+        #[arg(value_enum, default_value_t = SkillTopic::Guide)]
+        topic: SkillTopic,
+        /// Print only the folder of the installed skill and its scripts.
+        #[arg(long)]
+        path: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SkillTopic {
+    /// How to find, mount and copy from an image, and the rules to follow.
+    Guide,
+    /// Where apps keep their data and what does not carry over after a Windows reset.
+    Apps,
 }
 
 #[derive(Debug, Args)]
@@ -377,6 +397,9 @@ pub(crate) mod tests {
             vec!["redeploy", "--disk", "2", "--drivers", "C:\\Drivers", "D:\\Drivers"],
             vec!["viboot", "start", "a.irimg"],
             vec!["viboot", "list"],
+            vec!["skill"],
+            vec!["skill", "apps"],
+            vec!["skill", "--path"],
             vec!["viboot", "stop", "VM"],
             vec!["def", "list"],
             vec!["def", "run", id],

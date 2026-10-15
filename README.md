@@ -74,6 +74,7 @@ inocrium.exe backup --disk 1 --partitions 1,3 --dest D:\Backups --encrypt --spli
 inocrium.exe backup --disk 1 --dest D:\Backups --forensic --keep-days 30
 
 inocrium.exe verify D:\Backups\workstation-20261014-090507.irimg
+inocrium.exe info D:\Backups\workstation-20261014-090507.irimg
 inocrium.exe mount D:\Backups\workstation-20261014-090507.irimg --partition 2
 inocrium.exe mount D:\Backups\workstation-20261014-090507.irimg --writable
 inocrium.exe mount D:\Backups\workstation-20261014-090507.irimg --keep-permissions
@@ -108,6 +109,8 @@ Additional commands and schedule options are implemented in the parser and dispa
 | `viboot list`, `viboot stop <name>` | Service-owned VM lifecycle. |
 | `def list`, `def run <id>`, `def delete <id>` | Saved definition management and execution. |
 | `def create --name <name> --disk <number> --dest <folder>` | Backup options plus one of `--daily HH:MM`, `--weekly HH:MM --days mon,wed,fri`, or `--monthly HH:MM --day 1..31`; `--run-missed` enables catch-up. |
+| `info <img>` | Disks, partitions, file systems and sizes in an image; works without elevation or the service. |
+| `skill [apps] [--path]` | Prints the guide an AI assistant follows to restore files from an image (see [docs/ai-restore.md](docs/ai-restore.md)); needs neither elevation nor the service. |
 | `jobs`, `jobs cancel <id>` | List/cancel service jobs. |
 | `history --limit <count>`, `logs <job-id>` | Service history (default limit 50) and per-job logs. |
 
@@ -121,10 +124,17 @@ For example, this definition is run by the service's scheduler:
 inocrium.exe def create --name "Nightly" --disk 1 --dest D:\Backups --verify --daily 02:00 --run-missed
 ```
 
+### Rescue media (WinPE)
+
+[winpe/](winpe/README.md) builds a small Windows PE ISO or USB drive that boots with Secure Boot and writes an image back to a chosen disk, for when Windows itself no longer starts or a reset failed. It opens a numbered restore menu with typed confirmation before anything is overwritten.
+
+### AI-assisted restore
+
+After a Windows reset, an AI assistant such as Claude Code can copy files and app settings back from an image. `inocrium skill` prints the guide it follows; [docs/ai-restore.md](docs/ai-restore.md) covers setup, example prompts and what does not carry over.
+
 ## Non-goals
 
 - Creating incremental or differential `.irimg` backups; native backups are full images. Reading an existing supported `.mrimgx` chain is a separate feature.
-- WinPE rescue-media creation.
 - Direct disk cloning.
 - File-level backup.
 
@@ -189,7 +199,7 @@ rustup target add x86_64-pc-windows-msvc
 .\installer\build.ps1
 ```
 
-The script builds release Rust binaries, publishes a self-contained GUI, and builds `installer\out\x64\inocrium-reflect-0.1.4-x64.msi`. ARM64 is available with `-Platform ARM64` and the `aarch64-pc-windows-msvc` toolchain/libraries. See [installer/README.md](installer/README.md) for prerequisites and version options. Test installation on a clean Windows system before release.
+The script builds release Rust binaries, publishes a self-contained GUI, and builds `installer\out\x64\inocrium-reflect-0.1.5-x64.msi`. ARM64 is available with `-Platform ARM64` and the `aarch64-pc-windows-msvc` toolchain/libraries. See [installer/README.md](installer/README.md) for prerequisites and version options. Test installation on a clean Windows system before release.
 
 ## Testing
 
@@ -235,6 +245,8 @@ These are validation instructions, not a report that the suites passed. Passing 
 | `crates/cli/` | CLI parser, service dispatch, elevated direct operations, password input and progress/output. |
 | `gui/` | WinUI 3 / .NET 8 desktop client. |
 | `installer/` | WiX v5 MSI authoring and build/publish script. |
+| `winpe/` | Windows PE rescue-media build, restore menu and USB writer. |
+| `skill/` | The AI restore guide and its helper scripts, installed with the MSI and printed by `inocrium skill`. |
 | `tests/` | Elevated Pester VHDX end-to-end suite, resource helpers and syntax validator. |
 | `docs/` | Architecture and native image-format documentation. |
 

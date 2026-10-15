@@ -64,6 +64,17 @@ pub fn run(cli: &Cli, client: &Client, passwords: &mut Passwords, cancel: &engin
             passwords,
             timeout,
         )?),
+        Command::Info { img } => {
+            let summary: ImageDetails = request(
+                client,
+                methods::IMAGES_INSPECT,
+                ImagePasswordParams { path: path(img)?, password: passwords.current() },
+                passwords,
+                timeout,
+            )?;
+            output::image(&summary, cli.json)?;
+            None
+        }
         Command::Mount { img, writable, keep_permissions, disk, partition } => {
             let mount: Mount = request(
                 client,
@@ -198,6 +209,7 @@ pub fn run(cli: &Cli, client: &Client, passwords: &mut Passwords, cancel: &engin
             output::value(&history, cli.json)?;
             None
         }
+        Command::Skill { topic, path } => return crate::skill::run(*topic, *path),
         Command::Logs { job_id } => {
             let logs: String = client.call(methods::LOGS_READ, LogsParams { job_id: *job_id })?;
             output::value(&logs, cli.json)?;

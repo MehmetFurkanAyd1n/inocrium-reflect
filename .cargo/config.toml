@@ -1,0 +1,7 @@
+# Link the C runtime statically: the binaries then run on a freshly installed Windows and in
+# Windows PE, neither of which ships VCRUNTIME140.dll.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

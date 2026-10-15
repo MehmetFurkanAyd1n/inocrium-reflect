@@ -10,6 +10,8 @@ mod password;
 mod progress;
 #[cfg(windows)]
 mod remote;
+#[cfg(windows)]
+mod skill;
 #[cfg(all(windows, test))]
 mod test_support;
 
@@ -34,6 +36,9 @@ fn main() {
 #[cfg(windows)]
 fn run(cli: &args::Cli) -> anyhow::Result<i32> {
     use std::time::Duration;
+    if let args::Command::Skill { topic, path } = &cli.command {
+        return skill::run(*topic, *path);
+    }
     let cancel = engine::Cancel::new();
     let signal = cancel.clone();
     ctrlc::set_handler(move || signal.cancel())?;
@@ -52,7 +57,7 @@ fn run(cli: &args::Cli) -> anyhow::Result<i32> {
         anyhow::bail!("This command requires the background service");
     }
     anyhow::ensure!(
-        winio::is_elevated(),
+        winio::is_elevated() || matches!(&cli.command, args::Command::Info { .. }),
         "Direct mode requires administrator privileges. Start the service or run an elevated console."
     );
     anyhow::ensure!(!cli.detach, "--detach requires the service; direct operations run in this process");

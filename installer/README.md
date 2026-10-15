@@ -11,7 +11,7 @@ From the repository root:
 
 ```powershell
 rustup target add x86_64-pc-windows-msvc
-.\installer\build.ps1 -Configuration Release -Platform x64 -Version 0.1.4
+.\installer\build.ps1 -Configuration Release -Platform x64 -Version 0.1.5
 ```
 
 ARM64 uses the same authoring with a platform property. Install the ARM64 MSVC
@@ -19,7 +19,7 @@ compiler/linker and Windows SDK libraries, then:
 
 ```powershell
 rustup target add aarch64-pc-windows-msvc
-.\installer\build.ps1 -Platform ARM64 -Version 0.1.4
+.\installer\build.ps1 -Platform ARM64 -Version 0.1.5
 ```
 
 The script builds the Rust service and CLI in release mode for the requested
@@ -42,18 +42,19 @@ For existing payloads, build WiX directly:
 
 ```powershell
 dotnet build installer/Inocrium.Installer.wixproj -c Release -p:Platform=x64 `
-  -p:ProductVersion=0.1.4 '-p:RustOutDir=C:\payload\rust' `
+  -p:ProductVersion=0.1.5 '-p:RustOutDir=C:\payload\rust' `
   '-p:GuiPublishDir=C:\payload\gui'
 ```
 
-`ProductVersion` defaults to `0.1.4`; `RustOutDir` defaults to `target/release`;
+`ProductVersion` defaults to `0.1.5`; `RustOutDir` defaults to `target/release`;
 `GuiPublishDir` defaults to the staging path above. Include `LICENSE` in a manually
 prepared GUI payload. The GUI project has no explicit `AssemblyName`, so its
 project name yields `Inocrium.App.exe`. The Rust binaries are `inocrium.exe` and
 `inocrium-service.exe`.
 
 The per-machine MSI installs to `ProgramFiles64Folder\inocrium reflect`, optionally
-appends the install directory to the system PATH (`ADDLOCAL=ALL`), creates a Start-menu shortcut, and
+appends the install directory to the system PATH (`ADDLOCAL=ALL`), installs the AI restore guide from
+`skill/` to `skill\restore-from-backup` (printed by `inocrium skill`), creates a Start-menu shortcut, and
 registers `InocriumReflect` as an automatic LocalSystem service. It starts/stops
 the service during installation/removal and configures restart after failures
 (60-second delay, reset after one day). The service must enter Windows service

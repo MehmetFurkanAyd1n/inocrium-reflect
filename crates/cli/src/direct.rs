@@ -31,6 +31,7 @@ pub fn run(cli: &Cli, passwords: &mut Passwords, cancel: &engine::Cancel) -> Res
             progress::finish(cli.json);
             output::value(&serde_json::json!({"verified":true, "image":img}), cli.json)?;
         }
+        Command::Info { img } => output::image(&engine::win::describe(img, &open_image(img, passwords)?), cli.json)?,
         Command::Mount { img, writable, keep_permissions, disk, partition } => {
             let _ = open_image(img, passwords)?;
             cancel.check()?;
@@ -127,6 +128,7 @@ pub fn run(cli: &Cli, passwords: &mut Passwords, cancel: &engine::Cancel) -> Res
         },
         Command::Viboot { .. } => bail!("viBoot requires the service to maintain a persistent VM and writable mount"),
         Command::Jobs { .. } | Command::History { .. } | Command::Logs { .. } => bail!("This command requires the background service"),
+        Command::Skill { topic, path } => return crate::skill::run(*topic, *path),
     }
     Ok(0)
 }

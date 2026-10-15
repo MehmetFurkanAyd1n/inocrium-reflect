@@ -4,6 +4,7 @@
 mod mount;
 mod restore;
 mod source;
+mod summary;
 
 use std::collections::HashSet;
 use std::io;
@@ -21,6 +22,7 @@ pub use restore::{
     export_vhdx, restore_image_disk, restore_image_partition, DiskRestoreOptions, DiskRestoreReport, PartitionTarget,
 };
 pub use source::{prepare_backup, DiskSelection, PrepareOptions, PreparedSources, Shadow};
+pub use summary::{describe, file_time};
 
 impl From<winio::Error> for Error {
     fn from(e: winio::Error) -> Self {
